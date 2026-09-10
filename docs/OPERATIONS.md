@@ -1,0 +1,13 @@
+# Operations
+
+Open a fresh task, confirm the registered tools, and call `project_bootstrap` with `register=false`. Use `context_search` and `decision_list` to read recovered state. Compare bootstrap branch and HEAD with direct Git as shown in [MCP_CONFIGURATION.md](MCP_CONFIGURATION.md).
+
+For ordinary coding tasks beneath `<approved-root>`, the inherited policy in `<codex-home>\AGENTS.md` causes the bootstrap call before substantial work; the task prompt does not need to mention AIContextMCP. State in a task prompt when retrieval should be skipped for that task. Verify inheritance and the bounded retrieval/write-back rules in [AGENT_INTEGRATION.md](AGENT_INTEGRATION.md); regression evidence is regression-output.txt (local validation receipt). If the service is unavailable, report it and continue from Git and repository instructions where safe.
+
+The current client checkpoint recovered project `4fe2a4dc-6a16-4ff0-ba20-abb11bff66b2`, repository `e3f7e841-4a66-446c-ae05-03adc9a4dbb3`, and a `Clean` snapshot with fingerprint `8519a964954fab7ed17dc556a7da8e55ed554469c4506575bab445e4e4cde3e5` on branch `feature/issue-21-governance-contract-semantics` at `45159b5c57e698190476683ac5b3f8c8c4a50de9`. Repository-scoped readback confirms all three context records are current, including `e8be3554-2f40-4744-a079-ff3518da47fb`.
+
+The configuration receipt records an earlier `Server.dll` sharing violation. That historical error is resolved: the corrective receipt verifies the restored canonical hashes and preserved changed files. User-provided canonical Release build/test output reports 92/0/0, and the parent independently matched configured `AIContextMCP.Server.dll` SHA256 `DFAB85C42A9C987E617C9D6E5838C41604727CFDCBE77B37B22CDFEA6CD93CD2`; see rebuild-resume.json (local validation receipt). deployment.json (local validation receipt) records the historical output-refresh rollback.
+
+The single authorized `context_record` write is complete exactly once and read back as active/current; see controlled-write.json (local validation receipt).
+
+The fresh-task readback passed for all three contexts, current decision/validation/handoff state, zero findings and warnings, Clean Git with the expected fingerprint, and the 8+14 registered tool surfaces; see post-write-fresh-session.json (local validation receipt). The full post-write restart then recovered the same record and state, preserved both registrations, and retained the expected Clean Git snapshot; see final-restart.json (local validation receipt). Chunk 9 validation is complete and no further restart, write, rebuild, configuration, or test action is required.

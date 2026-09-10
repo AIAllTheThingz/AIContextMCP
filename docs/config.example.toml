@@ -1,0 +1,14 @@
+# Safe example only. Replace every <...> placeholder with local values.
+[mcp_servers.aicontextmcp]
+enabled = true
+command = "dotnet"
+args = ['<checkout>\publish\AIContextMCP.Server.dll']
+cwd = '<checkout>'
+
+[mcp_servers.aicontextmcp.env]
+AIContextMCP_DatabasePath = '<local-data>\AIContextMCP.db'
+AIContextMCP_ArtifactRoot = '<local-data>\artifacts'
+AIContextMCP_ApprovedRepositoryRoots__0 = '<approved-repository-root>'
+AIContextMCP_MinimumLogLevel = 'Information'
+
+# The approved root must be the parent directory containing repositories.

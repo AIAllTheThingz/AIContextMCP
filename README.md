@@ -1,0 +1,94 @@
+# AIContextMCP
+
+AIContextMCP is a local .NET 10 MCP server that keeps compact, Git-aware engineering context in SQLite and bounded filesystem artifacts. Git and repository instructions remain authoritative.
+
+## Overview
+
+The server is designed for Windows local stdio deployments and fails closed when repository paths are outside configured approved roots or use unsupported filesystem layouts.
+
+## Problem It Solves
+
+AI coding sessions often lose decisions, validation results, and handoffs between sessions. AIContextMCP stores that durable project state locally so a client can bootstrap current repository state and retrieve only relevant history.
+
+## Architecture
+
+```text
+MCP client -> AIContextMCP -> Core -> SQLite + filesystem artifacts
+                                  -> Git repositories remain authoritative
+```
+
+## Context Model
+
+- Tier 1: compact bootstrap and current repository state.
+- Tier 2: retrievable decisions, findings, tests, handoffs, and context.
+- Tier 3: cold or large authoritative artifacts addressed by bounded references.
+
+## Features
+
+- Local stdio MCP transport with strict JSON contracts.
+- Git branch, HEAD, and working-tree freshness checks.
+- SQLite persistence with migrations, bounded records, and restart recovery.
+- Secret-shaped value rejection and bounded artifact storage.
+- Safe degraded operation when the server is unavailable.
+
+## MCP Tools
+
+The server exposes exactly eight wire tools: `project.bootstrap`, `context.search`, `context.record`, `decision.list`, `decision.record`, `finding.record`, `test.record`, and `handoff.create`. Clients such as Codex may display underscore aliases: `project_bootstrap`, `context_search`, `context_record`, `decision_list`, `decision_record`, `finding_record`, `test_record`, and `handoff_create`.
+
+## Requirements
+
+- .NET SDK 10.0.
+- Windows is required for the validated repository boundary and reparse-point checks.
+- Git available on `PATH` for the documented clone and development/test workflow.
+- A local writable directory for the SQLite database and artifact root.
+
+## Clone, Restore, Build, Test, and Publish
+
+```powershell
+git clone https://github.com/AIAllTheThingz/AIContextMCP.git
+Set-Location AIContextMCP
+dotnet restore AIContextMCP.slnx
+dotnet build AIContextMCP.slnx --configuration Release
+dotnet test AIContextMCP.slnx --configuration Release
+dotnet publish .\src\AIContextMCP.Server\AIContextMCP.Server.csproj --configuration Release --output .\publish
+```
+
+The published directory is the deployment unit. Do not copy only the server DLL.
+
+## Configuration
+
+The server reads environment variables with the `AIContextMCP_` prefix. Copy [config.example.toml](docs/config.example.toml), replace placeholders with local values, and configure your MCP client. The server itself does not read TOML; the sample shows the client command and environment mapping.
+
+Required settings are `AIContextMCP_DatabasePath`, `AIContextMCP_ArtifactRoot`, and one or more `AIContextMCP_ApprovedRepositoryRoots__N` values. Configure an approved parent directory containing repositories; the root itself is not treated as a repository. See [MCP_CONFIGURATION.md](docs/MCP_CONFIGURATION.md).
+
+## MCP Client Configuration
+
+Use a local stdio registration whose command runs `dotnet` against the published `AIContextMCP.Server.dll`, with `cwd` set to the checkout and the environment values in the sample. Keep the database and artifact directories outside Git.
+
+## Usage Examples
+
+For a new repository, call `project_bootstrap` once with `register=true` and a request ID, then use `register=false` and `includeWorkingTree=true` for read-only bootstrap. Use `context_search` for a targeted topic. Record accepted decisions, test results, findings, and handoffs explicitly through their corresponding tools.
+
+## Persistent Storage
+
+SQLite stores bounded project metadata and records. Larger evidence is stored below the configured artifact root and referenced by hash. Back up the database and artifact root together; both are local runtime data and are excluded from Git.
+
+## Security Model
+
+Repository paths must be beneath configured approved roots and are checked for containment and unsafe reparse points. The server never executes client-supplied commands, rejects credential-shaped values, bounds requests and records, and writes logs to stderr. See [SECURITY.md](docs/SECURITY.md).
+
+## Context Efficiency
+
+Bootstrap returns a compact current-state projection. Retrieve Tier 2 records only when relevant and use Tier 3 artifacts for large authoritative evidence. Exact limits and freshness behavior are documented in [MCP_CONTRACT.md](docs/MCP_CONTRACT.md).
+
+## Known Limitations
+
+The server is local and uses stdio; it does not provide remote access, authentication, embeddings, vector search, or organization-wide repository migration. Some unsupported Git metadata layouts are reported as unknown or rejected conservatively. The implementation reads Git metadata directly; Git on `PATH` is needed for the documented build/test workflow and fixtures.
+
+## Development
+
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [OPERATIONS.md](docs/OPERATIONS.md), and [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Historical pilot and local validation summaries are retained in [PILOT_RESULTS.md](docs/PILOT_RESULTS.md) and [LOCAL_TEST_RESULTS.md](docs/LOCAL_TEST_RESULTS.md).
+
+## License
+
+AIContextMCP is licensed under the GNU General Public License version 3 or later: [GPL-3.0-or-later](LICENSE).

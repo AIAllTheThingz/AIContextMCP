@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AIContextMCP.Core/AIContextMCP.Core.csproj" />
+    <Project Path="src/AIContextMCP.Server/AIContextMCP.Server.csproj" />
+    <Project Path="src/AIContextMCP.Storage.Sqlite/AIContextMCP.Storage.Sqlite.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AIContextMCP.Core.Tests/AIContextMCP.Core.Tests.csproj" />
+    <Project Path="tests/AIContextMCP.Server.Tests/AIContextMCP.Server.Tests.csproj" />
+    <Project Path="tests/AIContextMCP.Storage.Sqlite.Tests/AIContextMCP.Storage.Sqlite.Tests.csproj" />
+  </Folder>
+</Solution>
