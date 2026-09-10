@@ -10,7 +10,7 @@ GNU General Public License version 3 or later (`GPL-3.0-or-later`). See [LICENSE
 
 ## Sanitization
 
-Public documentation uses placeholders for local paths, usernames, client configuration, and runtime receipts. Runtime databases, artifacts, logs, build output, IDE state, local configuration, secrets, tokens, private keys, and credential material are ignored and excluded from the public source tree.
+Public documentation uses generic placeholders for local paths, usernames, client configuration, and runtime receipts. Keep source, build, runtime, data/artifacts, and logs roots separate. Runtime databases, artifacts, logs, build output, IDE state, local configuration, secrets, tokens, private keys, and credential material are ignored and excluded from the public source tree.
 
 ## Runtime Files Excluded
 
@@ -26,11 +26,11 @@ The candidate review found no known credentials and one synthetic private-key te
 
 ## Local Build/Test, Publish, and Runtime
 
-Canonical restore passed. The canonical Release build failed because active MCP processes held DLL locks. Isolated restore/build passed with 0 warnings and 0 errors; isolated tests passed 92/0/0 (Core 50, Server 11, Storage 31). A full publish using a fresh database started successfully, exited 0, and enumerated all eight tools.
+External restore/build completed with 0 warnings and 0 errors; Release tests passed 92/0/0 (Core 50, Server 11, Storage 31). Publish and republish succeeded, and two fresh Codex CLI launches from the external runtime preserved database records and all eight tools. Source `bin`/`obj`/publish/log/data outputs were cleared after validation. Desktop GUI restart validation is not claimed.
 
 ## AIContextMCP Self-Rebuild Test and MCP Reconnection
 
-Historical restart evidence shows persistence recovery for the completed pilot. A current bootstrap attempt returned `PathRejected` because the configured approved root did not contain this repository. No installed MCP continuity or reconnection claim is made for this candidate; self-rebuild evidence remains pending.
+Historical restart evidence shows persistence recovery for the completed pilot. The earlier `PathRejected` bootstrap was a configuration-boundary observation, not a migration failure. Fresh CLI launches from the external runtime recovered the expected records and eight-tool catalog. No desktop GUI restart or installed-client continuity claim is made.
 
 ## Clean Source Validation
 
@@ -50,7 +50,7 @@ The server is local stdio software. It does not provide remote authentication, e
 
 ## Reproduction Instructions
 
-Follow the clone, restore, build, test, publish, and configuration instructions in [README.md](../README.md). Keep runtime data outside the checkout and verify the published directory starts with `dotnet <publish>\\AIContextMCP.Server.dll`.
+Follow the clone, restore, build, test, runtime-layout, and configuration instructions in [README.md](../README.md). Keep runtime data outside the checkout and verify the published directory starts with `dotnet <runtime-root>\\AIContextMCP.Server.dll`.
 
 ## Status
 

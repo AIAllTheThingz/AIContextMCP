@@ -42,7 +42,7 @@ The server exposes exactly eight wire tools: `project.bootstrap`, `context.searc
 - Git available on `PATH` for the documented clone and development/test workflow.
 - A local writable directory for the SQLite database and artifact root.
 
-## Clone, Restore, Build, Test, and Publish
+## Clone, Restore, Build, Test, and Runtime Layout
 
 ```powershell
 git clone https://github.com/AIAllTheThingz/AIContextMCP.git
@@ -50,10 +50,10 @@ Set-Location AIContextMCP
 dotnet restore AIContextMCP.slnx
 dotnet build AIContextMCP.slnx --configuration Release
 dotnet test AIContextMCP.slnx --configuration Release
-dotnet publish .\src\AIContextMCP.Server\AIContextMCP.Server.csproj --configuration Release --output .\publish
+dotnet publish .\src\AIContextMCP.Server\AIContextMCP.Server.csproj --configuration Release --output '<runtime-root>'
 ```
 
-The published directory is the deployment unit. Do not copy only the server DLL.
+Restore, build, and test default to external per-project `bin`/`obj` output below `../build/AIContextMCP`; no extra flags are required. Keep source, build output, published runtime files, data/artifacts, and logs in separate roots. A generic local layout is `<mcp-root>/{AIContextMCP,build/AIContextMCP,runtime/AIContextMCP,data/AIContextMCP,logs/AIContextMCP}`. Publish into `<runtime-root>`; that published directory is the deployment unit. Do not copy only the server DLL.
 
 ## Configuration
 
@@ -63,7 +63,7 @@ Required settings are `AIContextMCP_DatabasePath`, `AIContextMCP_ArtifactRoot`, 
 
 ## MCP Client Configuration
 
-Use a local stdio registration whose command runs `dotnet` against the published `AIContextMCP.Server.dll`, with `cwd` set to the checkout and the environment values in the sample. Keep the database and artifact directories outside Git.
+Use a local stdio registration whose command runs `dotnet` against the published `AIContextMCP.Server.dll`, with `cwd` set to the runtime root and the environment values in the sample. Keep the client configuration in its client configuration location, outside Git, and keep database, artifacts, and logs outside Git.
 
 ## Usage Examples
 
@@ -71,7 +71,7 @@ For a new repository, call `project_bootstrap` once with `register=true` and a r
 
 ## Persistent Storage
 
-SQLite stores bounded project metadata and records. Larger evidence is stored below the configured artifact root and referenced by hash. Back up the database and artifact root together; both are local runtime data and are excluded from Git.
+SQLite stores bounded project metadata and records. Larger evidence is stored below the configured artifact root and referenced by hash. Back up the database, artifact root, and runtime configuration together; all are local runtime data and are excluded from Git. Structured diagnostics continue to stderr; client or service-manager capture belongs under the separate logs root.
 
 ## Security Model
 

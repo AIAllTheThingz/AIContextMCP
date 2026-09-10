@@ -2,12 +2,12 @@
 [mcp_servers.aicontextmcp]
 enabled = true
 command = "dotnet"
-args = ['<checkout>\publish\AIContextMCP.Server.dll']
-cwd = '<checkout>'
+args = ['<runtime-root>\AIContextMCP.Server.dll']
+cwd = '<runtime-root>'
 
 [mcp_servers.aicontextmcp.env]
-AIContextMCP_DatabasePath = '<local-data>\AIContextMCP.db'
-AIContextMCP_ArtifactRoot = '<local-data>\artifacts'
+AIContextMCP_DatabasePath = '<data-root>\AIContextMCP.db'
+AIContextMCP_ArtifactRoot = '<data-root>\artifacts'
 AIContextMCP_ApprovedRepositoryRoots__0 = '<approved-repository-root>'
 AIContextMCP_MinimumLogLevel = 'Information'
 
