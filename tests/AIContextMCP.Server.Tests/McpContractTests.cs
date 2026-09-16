@@ -70,11 +70,13 @@ public sealed class McpContractTests
         Assert.False(AllowsNull(bootstrapProperties.GetProperty("register")));
         Assert.True(bootstrapProperties.GetProperty("includeWorkingTree").GetProperty("default").GetBoolean());
         Assert.False(bootstrapProperties.GetProperty("register").GetProperty("default").GetBoolean());
-        Assert.False(string.IsNullOrWhiteSpace(bootstrapProperties.GetProperty("requestId").GetProperty("description").GetString()));
+        var requestIdDescription = bootstrapProperties.GetProperty("requestId").GetProperty("description").GetString();
+        Assert.Contains("<unix-seconds>:<lowercase-D-UUID>", requestIdDescription, StringComparison.Ordinal);
+        Assert.Contains("-30d/+60s", requestIdDescription, StringComparison.Ordinal);
         var conditional = bootstrap.InputSchema.GetProperty("allOf")[0];
         Assert.Contains("register", conditional.GetProperty("if").GetProperty("required").EnumerateArray().Select(value => value.GetString()));
         Assert.Contains("requestId", conditional.GetProperty("then").GetProperty("required").EnumerateArray().Select(value => value.GetString()));
-        Assert.Equal(1, conditional.GetProperty("then").GetProperty("properties").GetProperty("requestId").GetProperty("minLength").GetInt32());
+        Assert.Equal("^(?:0|[1-9][0-9]{0,10}):[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", conditional.GetProperty("then").GetProperty("properties").GetProperty("requestId").GetProperty("pattern").GetString());
 
         var search = Assert.Single(tools, tool => tool.Name == "context.search").InputSchema.GetProperty("properties");
         Assert.True(AllowsNull(search.GetProperty("repositoryId")));

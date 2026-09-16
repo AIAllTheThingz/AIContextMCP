@@ -11,7 +11,7 @@ internal static class McpToolCatalog
 {
     private static readonly IReadOnlyList<McpToolDescriptor> Items =
     [
-        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect repositoryPath with register=false (default), or register=true with a nonempty requestId. projectId/repositoryId are server-issued UUIDs; NotFound means bootstrap an existing registered path or register it first.", false),
+        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect repositoryPath (register=false); register=true needs requestId. IDs are server UUIDs; NotFound => register path.", false),
         Tool<ContextSearch, SearchResult>("context.search", "Search bounded project context records in observed-time order.", true),
         Tool<ContextRecord, RecordReceipt>("context.record", "Record bounded repository context and its verified observation.", false),
         Tool<DecisionList, DecisionListResult>("decision.list", "List bounded project decisions in observed-time order.", true),
@@ -42,10 +42,10 @@ internal static class McpToolCatalog
     private static void AddBootstrapDescriptions(JsonObject schema)
     {
         var properties = (JsonObject)schema["properties"]!;
-        ((JsonObject)properties["requestId"]!)["description"] = "Nonempty replay ID; required when register=true.";
-        ((JsonObject)properties["repositoryPath"]!)["description"] = "Repository path to inspect or register.";
-        ((JsonObject)properties["register"]!)["description"] = "Register the path; defaults to false.";
-        ((JsonObject)properties["includeWorkingTree"]!)["description"] = "Include current working-tree state; defaults to true.";
+        ((JsonObject)properties["requestId"]!)["description"] = "<unix-seconds>:<lowercase-D-UUID>; -30d/+60s; required for registration.";
+        ((JsonObject)properties["repositoryPath"]!)["description"] = "Path to inspect/register.";
+        ((JsonObject)properties["register"]!)["description"] = "Register; default false.";
+        ((JsonObject)properties["includeWorkingTree"]!)["description"] = "Include working tree; default true.";
         schema["allOf"] = new JsonArray
         {
             new JsonObject
@@ -54,7 +54,7 @@ internal static class McpToolCatalog
                 ["then"] = new JsonObject
                 {
                     ["required"] = new JsonArray("requestId"),
-                    ["properties"] = new JsonObject { ["requestId"] = new JsonObject { ["type"] = "string", ["minLength"] = 1 } }
+                    ["properties"] = new JsonObject { ["requestId"] = new JsonObject { ["type"] = "string", ["pattern"] = "^(?:0|[1-9][0-9]{0,10}):[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$" } }
                 }
             }
         };

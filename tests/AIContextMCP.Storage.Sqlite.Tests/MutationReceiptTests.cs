@@ -98,6 +98,7 @@ public sealed class MutationReceiptTests
             }, cancellation.Token);
         });
         await secondStarted.Task.WaitAsync(cancellation.Token);
+        await Task.Delay(100, cancellation.Token);
         release.TrySetResult(true);
 
         var receipts = await Task.WhenAll(first, duplicate).WaitAsync(cancellation.Token);
