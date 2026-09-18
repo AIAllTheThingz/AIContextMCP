@@ -43,7 +43,7 @@ internal static class McpProtocolHandlers
         {
             IsError = result.IsError,
             StructuredContent = document.RootElement.Clone(),
-            Content = []
+            Content = [new TextContentBlock { Text = result.Json }]
         };
     }
 }

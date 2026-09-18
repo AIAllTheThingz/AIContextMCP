@@ -65,6 +65,22 @@ Required settings are `AIContextMCP_DatabasePath`, `AIContextMCP_ArtifactRoot`, 
 
 Use a local stdio registration whose command runs `dotnet` against the published `AIContextMCP.Server.dll`, with `cwd` set to the runtime root and the environment values in the sample. Keep the client configuration in its client configuration location, outside Git, and keep database, artifacts, and logs outside Git.
 
+### Claude setup and first registration
+
+Claude connects to the same local stdio server. After deploying a new published runtime, restart or reconnect the Claude MCP server so Claude refreshes `tools/list`; otherwise the client can retain an older tool catalog. The current build returns both text and structured MCP responses; the earlier empty-content/`Unknown error` behavior is fixed.
+
+For the first local registration, call `project_bootstrap` with the repository path and a unique request ID. `repositoryPath` is required for local registration. Omit `projectId` and `remote`; both `projectId` and `repositoryId` are server-issued UUIDs returned after registration. `remote` is optional and acts as a match constraint when supplied:
+
+```json
+{
+  "requestId": "<issued-UTC-epoch-seconds>:<uuid>",
+  "repositoryPath": "D:\\Projects\\Example",
+  "register": true
+}
+```
+
+For inspection, use `register: false` (and normally `includeWorkingTree: true`). A `NotFound` response means that the canonical repository is not registered; register it explicitly, then use the returned server-issued IDs. Do not guess UUIDs. If the client still shows no tools or an empty/unknown result after deployment, restart or reconnect its MCP server and retry the same request ID.
+
 ## Usage Examples
 
 For a new repository, call `project_bootstrap` once with `register=true` and a request ID, then use `register=false` and `includeWorkingTree=true` for read-only bootstrap. Use `context_search` for a targeted topic. Record accepted decisions, test results, findings, and handoffs explicitly through their corresponding tools.
