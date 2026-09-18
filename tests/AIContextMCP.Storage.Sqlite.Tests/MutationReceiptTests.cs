@@ -67,7 +67,7 @@ public sealed class MutationReceiptTests
     }
 
     [Fact]
-    public async Task ConcurrentInstancesApplySameKeyOnce()
+    public async Task ConcurrentInstancesRejectBusyThenReplaySameKeyOnce()
     {
         await using var database = TemporaryDatabase.Create();
         await database.Storage.InitializeAsync();
@@ -76,7 +76,6 @@ public sealed class MutationReceiptTests
         var project = new ProjectDraft(Guid.NewGuid(), "concurrent", "Concurrent");
         var callbackEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbacks = 0;
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
@@ -88,20 +87,24 @@ public sealed class MutationReceiptTests
             return await CreateProjectReceiptAsync(storage, project, token);
         }, cancellation.Token);
         await callbackEntered.Task.WaitAsync(cancellation.Token);
-        var duplicate = Task.Run(async () =>
+        try
         {
-            secondStarted.TrySetResult(true);
-            return await second.ExecuteMutationAsync(request, async (storage, token) =>
+            // Hold the first transaction until contention is observed, then retry the same request.
+            var busy = await Assert.ThrowsAsync<StorageException>(() => second.ExecuteMutationAsync(request, async (storage, token) =>
             {
                 Interlocked.Increment(ref callbacks);
                 return await CreateProjectReceiptAsync(storage, project, token);
-            }, cancellation.Token);
-        });
-        await secondStarted.Task.WaitAsync(cancellation.Token);
-        release.TrySetResult(true);
+            }, cancellation.Token));
+            Assert.Equal(StorageErrorCode.DatabaseBusy, busy.Code);
+        }
+        finally
+        {
+            release.TrySetResult(true);
+            await first.WaitAsync(cancellation.Token);
+        }
 
-        var receipts = await Task.WhenAll(first, duplicate).WaitAsync(cancellation.Token);
-        Assert.Equal(receipts[0], receipts[1]);
+        var replay = await second.ExecuteMutationAsync(request, (_, _) => throw new InvalidOperationException("Replay invoked its callback."), cancellation.Token);
+        Assert.Equal(await first, replay);
         Assert.Equal(1, callbacks);
         Assert.NotNull(await second.GetProjectAsync(project.Id));
     }

@@ -853,7 +853,13 @@ public sealed class SqliteContextStorage : IAIContextStorage
 
     private static async Task ConfigureKnownDatabaseAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-        await SetPragmaAsync(connection, "PRAGMA journal_mode = DELETE;", cancellationToken);
+        await using var journalMode = Command(connection, "PRAGMA journal_mode;");
+        var currentMode = Convert.ToString(await ExecuteScalarAsync(journalMode, cancellationToken), CultureInfo.InvariantCulture);
+        if (!string.Equals(currentMode, "delete", StringComparison.OrdinalIgnoreCase))
+        {
+            await SetPragmaAsync(connection, "PRAGMA journal_mode = DELETE;", cancellationToken);
+        }
+
         await SetPragmaAsync(connection, "PRAGMA synchronous = FULL;", cancellationToken);
     }
 

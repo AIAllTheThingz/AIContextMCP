@@ -11,7 +11,7 @@ internal static class McpToolCatalog
 {
     private static readonly IReadOnlyList<McpToolDescriptor> Items =
     [
-        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect a registered repository and optionally register it with a durable receipt.", false),
+        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect repositoryPath (register=false); register=true needs requestId. IDs are server UUIDs; NotFound => register path.", false),
         Tool<ContextSearch, SearchResult>("context.search", "Search bounded project context records in observed-time order.", true),
         Tool<ContextRecord, RecordReceipt>("context.record", "Record bounded repository context and its verified observation.", false),
         Tool<DecisionList, DecisionListResult>("decision.list", "List bounded project decisions in observed-time order.", true),
@@ -35,7 +35,29 @@ internal static class McpToolCatalog
         var schema = McpJson.SchemaOptions.GetJsonSchemaAsNode(typeof(T), new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true })?.AsObject()
             ?? throw new InvalidOperationException("Schema could not be generated.");
         Constrain(schema, null);
+        if (typeof(T) == typeof(ProjectRef)) AddBootstrapDescriptions(schema);
         return JsonSerializer.SerializeToElement<JsonNode>(schema, McpJson.Options);
+    }
+
+    private static void AddBootstrapDescriptions(JsonObject schema)
+    {
+        var properties = (JsonObject)schema["properties"]!;
+        ((JsonObject)properties["requestId"]!)["description"] = "<unix-seconds>:<lowercase-D-UUID>; -30d/+60s; required for registration.";
+        ((JsonObject)properties["repositoryPath"]!)["description"] = "Path to inspect/register.";
+        ((JsonObject)properties["register"]!)["description"] = "Register; default false.";
+        ((JsonObject)properties["includeWorkingTree"]!)["description"] = "Include working tree; default true.";
+        schema["allOf"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["if"] = new JsonObject { ["required"] = new JsonArray("register"), ["properties"] = new JsonObject { ["register"] = new JsonObject { ["const"] = true } } },
+                ["then"] = new JsonObject
+                {
+                    ["required"] = new JsonArray("requestId"),
+                    ["properties"] = new JsonObject { ["requestId"] = new JsonObject { ["type"] = "string", ["pattern"] = "^(?:0|[1-9][0-9]{0,10}):[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$" } }
+                }
+            }
+        };
     }
 
     private static void Constrain(JsonNode? node, string? name)
