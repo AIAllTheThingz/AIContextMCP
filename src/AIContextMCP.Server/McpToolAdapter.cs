@@ -332,7 +332,9 @@ internal sealed class McpToolAdapter
     private static string SuccessJson<T>(T value, string correlationId, int limit)
     {
         var json = McpJson.Serialize(new McpEnvelope(true, McpJson.ToElement(value), null, 1, correlationId));
-        if (System.Text.Encoding.UTF8.GetByteCount(json) > limit - ProtocolResultReserveBytes) throw new McpInputException("LimitExceeded", "Response exceeds its limit.");
+        // MCP clients receive this envelope in both structuredContent and an escaped text block.
+        var textBytes = System.Text.Encoding.UTF8.GetByteCount(McpJson.Serialize(json));
+        if (System.Text.Encoding.UTF8.GetByteCount(json) + textBytes > limit - ProtocolResultReserveBytes) throw new McpInputException("LimitExceeded", "Response exceeds its limit.");
         return json;
     }
 

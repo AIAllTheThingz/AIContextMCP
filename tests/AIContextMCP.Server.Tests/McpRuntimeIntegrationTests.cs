@@ -32,6 +32,23 @@ public sealed class McpRuntimeIntegrationTests
             }
 
             Assert.NotEmpty((await first.Client.ListToolsAsync(new ListToolsRequestParams(), cancellationToken)).Tools);
+            Assert.Equal("NotFound", await ErrorCodeAsync(first.Client, "project.bootstrap", Arguments(
+                ("repositoryPath", fixture.RepositoryPath)), cancellationToken));
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "project.bootstrap", Arguments(
+                ("repositoryPath", fixture.RepositoryPath),
+                ("register", true)), cancellationToken));
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "project.bootstrap", Arguments(
+                ("requestId", ""),
+                ("repositoryPath", fixture.RepositoryPath),
+                ("register", true)), cancellationToken));
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "project.bootstrap", Arguments(
+                ("repositoryPath", fixture.RepositoryPath),
+                ("register", null)), cancellationToken));
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "context.search", Arguments(
+                ("projectId", "not-a-uuid")), cancellationToken));
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "context.search", Arguments(
+                ("projectId", Guid.NewGuid().ToString("D")),
+                ("maxResults", null)), cancellationToken));
             Assert.Equal("PathRejected", await ErrorCodeAsync(first.Client, "project.bootstrap", Arguments(
                 ("requestId", RequestId()),
                 ("repositoryPath", fixture.OutsideRepositoryPath),
@@ -41,11 +58,15 @@ public sealed class McpRuntimeIntegrationTests
             var bootstrap = Success(await CallAsync(first.Client, "project.bootstrap", Arguments(
                 ("requestId", RequestId()),
                 ("repositoryPath", fixture.RepositoryPath),
-                ("register", true),
-                ("includeWorkingTree", true)), cancellationToken));
+                ("register", true)), cancellationToken));
             var projectId = bootstrap.GetProperty("project").GetProperty("id").GetString()!;
             var repositoryId = bootstrap.GetProperty("repository").GetProperty("id").GetString()!;
             var cleanSnapshot = bootstrap.GetProperty("git").Clone();
+            Assert.Empty(Success(await CallAsync(first.Client, "context.search", Arguments(("projectId", projectId)), cancellationToken)).GetProperty("entries").EnumerateArray());
+            Assert.Empty(Success(await CallAsync(first.Client, "decision.list", Arguments(("projectId", projectId)), cancellationToken)).GetProperty("decisions").EnumerateArray());
+            Assert.Empty(Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId),
+                ("repositoryId", null)), cancellationToken)).GetProperty("entries").EnumerateArray());
 
             var cleanRecord = Arguments(
                 ("requestId", RequestId()),
@@ -282,6 +303,21 @@ public sealed class McpRuntimeIntegrationTests
                 Assert.Equal(5, listed.Body.GetProperty("id").GetInt64());
                 Assert.Equal(8, listed.Body.GetProperty("result").GetProperty("tools").GetArrayLength());
                 Assert.True(Encoding.UTF8.GetByteCount(listed.Line) <= McpJson.ResponseBytes, "The tools/list response exceeded the protocol response limit.");
+
+                var rawCall = JsonSerializer.Serialize(new
+                {
+                    jsonrpc = "2.0",
+                    id = 6,
+                    method = "tools/call",
+                    @params = new { name = "context.search", arguments = new { projectId, repositoryId, maxResults = 20, maxBytes = McpJson.ResponseBytes } }
+                }, McpJson.Options);
+                await raw.WriteLineAsync(rawCall, cancellationToken);
+                var called = await raw.ReadMessageAsync(cancellationToken);
+                Assert.Equal(6, called.Body.GetProperty("id").GetInt64());
+                var callResult = called.Body.GetProperty("result");
+                var text = callResult.GetProperty("content")[0].GetProperty("text").GetString();
+                Assert.Equal(callResult.GetProperty("structuredContent").GetRawText(), JsonDocument.Parse(text!).RootElement.GetRawText());
+                Assert.True(Encoding.UTF8.GetByteCount(called.Line) <= McpJson.ResponseBytes, "The tools/call response exceeded the protocol response limit.");
                 Assert.DoesNotContain(rawSecretId, raw.Output, StringComparison.Ordinal);
                 Assert.DoesNotContain(rawSecretId, raw.StandardError, StringComparison.Ordinal);
             }
@@ -306,6 +342,8 @@ public sealed class McpRuntimeIntegrationTests
         var result = await CallAsync(client, name, arguments, cancellationToken);
         Assert.True(result.IsError == true);
         var root = Structured(result);
+        var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+        Assert.Equal(root.GetRawText(), JsonDocument.Parse(text.Text).RootElement.GetRawText());
         Assert.False(root.GetProperty("ok").GetBoolean());
         return root.GetProperty("error").GetProperty("code").GetString()!;
     }
@@ -425,8 +463,9 @@ public sealed class McpRuntimeIntegrationTests
     private static JsonElement Success(CallToolResult result)
     {
         Assert.False(result.IsError == true, result.StructuredContent?.GetRawText());
-        Assert.Empty(result.Content);
         var root = Structured(result);
+        var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+        Assert.Equal(root.GetRawText(), JsonDocument.Parse(text.Text).RootElement.GetRawText());
         Assert.True(root.GetProperty("ok").GetBoolean());
         return root.GetProperty("data").Clone();
     }
