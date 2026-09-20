@@ -49,7 +49,8 @@ public sealed record ContextSearch(
     string? Query = null,
     int MaxResults = 20,
     int MaxBytes = 16 * 1024,
-    string? Cursor = null);
+    string? Cursor = null,
+    string? FindingId = null);
 
 public sealed record ContextRecord(
     string RequestId,
@@ -110,7 +111,8 @@ public sealed record TestRecord(
     long? DurationMs = null,
     string? Evidence = null,
     string? ArtifactRef = null,
-    string? ExpectedSnapshotToken = null);
+    string? ExpectedSnapshotToken = null,
+    string? SupersedesId = null);
 
 public sealed record FindingRecord(
     string RequestId,
@@ -150,7 +152,7 @@ public sealed record HandoffCreate(
 
 public sealed record RecordReceipt(string EntryId, string State, DateTimeOffset CreatedAtUtc, int Version);
 public sealed record DecisionReceipt(string DecisionId, string State, DateTimeOffset CreatedAtUtc, int Version);
-public sealed record TestReceipt(string TestRunId, string State, DateTimeOffset CreatedAtUtc, int Version);
+public sealed record TestReceipt(string TestRunId, string State, DateTimeOffset CreatedAtUtc, int Version, string? SupersedesId = null);
 public sealed record FindingReceipt(string FindingId, string State, DateTimeOffset CreatedAtUtc, int Version);
 public sealed record HandoffReceipt(string HandoffId, string State, DateTimeOffset CreatedAtUtc, int Version);
 public sealed record HandoffSummary(string HandoffId, string Objective, string NextAction, string? PhaseId, DateTimeOffset CreatedAtUtc, RecordFreshness Freshness);
@@ -185,6 +187,20 @@ public sealed record McpContextItem(
     Source? Source = null,
     IReadOnlyList<Reference>? References = null);
 
+public sealed record McpFindingItem(
+    string FindingId,
+    int Revision,
+    string Title,
+    FindingSeverity Severity,
+    FindingStatus Status,
+    string Description,
+    string? Remediation,
+    string? ResolutionEvidence,
+    string? Branch,
+    string? Commit,
+    RecordFreshness Freshness,
+    string? Provenance);
+
 public sealed record McpDecisionItem(
     string DecisionId,
     string Title,
@@ -199,7 +215,14 @@ public sealed record McpDecisionItem(
     Source? Source = null,
     IReadOnlyList<Reference>? References = null);
 
-public sealed record SearchResult(IReadOnlyList<McpContextItem> Entries, string? NextCursor, bool Truncated, IReadOnlyList<string> Warnings);
+public sealed record SearchResult(IReadOnlyList<McpContextItem> Entries, string? NextCursor, bool Truncated, IReadOnlyList<string> Warnings, IReadOnlyList<McpFindingItem> Findings)
+{
+    public SearchResult(IReadOnlyList<McpContextItem> entries, string? nextCursor, bool truncated, IReadOnlyList<string> warnings)
+        : this(entries, nextCursor, truncated, warnings, []) { }
+
+    public void Deconstruct(out IReadOnlyList<McpContextItem> entries, out string? nextCursor, out bool truncated, out IReadOnlyList<string> warnings) =>
+        (entries, nextCursor, truncated, warnings) = (Entries, NextCursor, Truncated, Warnings);
+}
 public sealed record DecisionListResult(IReadOnlyList<McpDecisionItem> Decisions, string? NextCursor, bool Truncated);
 
 internal sealed class McpInputException(string code, string message) : Exception(message)
@@ -212,6 +235,7 @@ public static class McpJson
     public const int RequestBytes = 64 * 1024;
     public const int ResponseBytes = 32 * 1024;
     public const int BootstrapResponseBytes = 16 * 1024;
+    public const int MinimumResponseBytes = 8 * 1024;
     public const int DefaultString = StorageLimits.ShortText;
     public const int Identifier = StorageLimits.Identifier;
     public const int Cursor = StorageLimits.ShortText;
@@ -391,7 +415,7 @@ public static class McpJson
 
     public static void MaximumBytes(int value)
     {
-        if (value is < 1 or > ResponseBytes) throw new McpInputException("LimitExceeded", "maxBytes exceeds its limit.");
+        if (value is < MinimumResponseBytes or > ResponseBytes) throw new McpInputException("LimitExceeded", $"maxBytes must be between {MinimumResponseBytes} and {ResponseBytes} bytes.");
     }
 
     private static void RejectSecret(string value, string name)

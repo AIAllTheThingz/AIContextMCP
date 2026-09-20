@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using AIContextMCP.Server;
+using AIContextMCP.Storage.Sqlite;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
@@ -62,6 +63,9 @@ public sealed class McpRuntimeIntegrationTests
             var projectId = bootstrap.GetProperty("project").GetProperty("id").GetString()!;
             var repositoryId = bootstrap.GetProperty("repository").GetProperty("id").GetString()!;
             var cleanSnapshot = bootstrap.GetProperty("git").Clone();
+            var minimumBudgetSearch = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("maxBytes", 8 * 1024)), cancellationToken));
+            Assert.Empty(minimumBudgetSearch.GetProperty("entries").EnumerateArray());
             Assert.Empty(Success(await CallAsync(first.Client, "context.search", Arguments(("projectId", projectId)), cancellationToken)).GetProperty("entries").EnumerateArray());
             Assert.Empty(Success(await CallAsync(first.Client, "decision.list", Arguments(("projectId", projectId)), cancellationToken)).GetProperty("decisions").EnumerateArray());
             Assert.Empty(Success(await CallAsync(first.Client, "context.search", Arguments(
@@ -120,6 +124,11 @@ public sealed class McpRuntimeIntegrationTests
                 ("summary", "Current branch observation."),
                 ("source", Source()),
                 ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("entryId").GetString()!;
+            var commitPrecedence = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId),
+                ("branch", "does-not-match"), ("commit", currentSnapshot.GetProperty("head").GetString()),
+                ("maxResults", 100)), cancellationToken));
+            Assert.Equal(branchEntryId, Entry(commitPrecedence, branchEntryId).GetProperty("entryId").GetString());
             var decisionId = Success(await CallAsync(first.Client, "decision.record", Arguments(
                 ("requestId", RequestId()),
                 ("projectId", projectId),
@@ -187,6 +196,7 @@ public sealed class McpRuntimeIntegrationTests
                 ("source", Source()),
                 ("runSnapshot", currentSnapshot),
                 ("observedUtc", DateTimeOffset.UtcNow)), cancellationToken)).GetProperty("testRunId").GetString()!;
+            var longFindingDescription = new string('x', 4097);
             var findingId = Success(await CallAsync(first.Client, "finding.record", Arguments(
                 ("requestId", RequestId()),
                 ("projectId", projectId),
@@ -194,9 +204,61 @@ public sealed class McpRuntimeIntegrationTests
                 ("title", "Persisted runtime finding"),
                 ("severity", "Info"),
                 ("status", "Open"),
-                ("description", "Persistence retrieval marker."),
+                ("description", longFindingDescription),
                 ("source", Source()),
                 ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("findingId").GetString()!;
+            var findingDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("findingId", findingId)), cancellationToken));
+            var detail = Assert.Single(findingDetail.GetProperty("findings").EnumerateArray());
+            Assert.Equal(findingId, detail.GetProperty("findingId").GetString());
+            Assert.Equal(longFindingDescription[..4096], detail.GetProperty("description").GetString());
+            Assert.True(findingDetail.GetProperty("truncated").GetBoolean());
+            Assert.Contains(findingDetail.GetProperty("warnings").EnumerateArray(), warning => warning.GetString() == "Finding detail fields were truncated for the response budget.");
+            var minimumBudgetFindingDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("findingId", findingId), ("maxBytes", McpJson.MinimumResponseBytes)), cancellationToken));
+            Assert.True(minimumBudgetFindingDetail.GetProperty("truncated").GetBoolean());
+            Assert.Single(minimumBudgetFindingDetail.GetProperty("findings").EnumerateArray());
+            var escapedProvenance = new string('<', McpJson.DefaultString);
+            var escapedProvenanceFindingId = Success(await CallAsync(first.Client, "finding.record", Arguments(
+                ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
+                ("title", "Escaped provenance finding"), ("severity", "Info"), ("status", "Open"),
+                ("description", "Fits the minimum response budget."), ("source", Source(escapedProvenance)),
+                ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("findingId").GetString()!;
+            var escapedProvenanceDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("findingId", escapedProvenanceFindingId),
+                ("maxBytes", McpJson.MinimumResponseBytes)), cancellationToken));
+            var escapedProvenanceItem = Assert.Single(escapedProvenanceDetail.GetProperty("findings").EnumerateArray());
+            Assert.True(escapedProvenanceDetail.GetProperty("truncated").GetBoolean());
+            Assert.True(escapedProvenanceItem.GetProperty("provenance").GetString()!.Length < escapedProvenance.Length);
+            var supersedingTest = Success(await CallAsync(first.Client, "test.record", Arguments(
+                ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
+                ("name", "Replacement runtime test"), ("status", "Passed"), ("passed", 1), ("failed", 0), ("skipped", 0),
+                ("summary", "Replacement test passed."), ("commandData", "dotnet test runtime"), ("source", Source()),
+                ("runSnapshot", currentSnapshot), ("observedUtc", DateTimeOffset.UtcNow), ("supersedesId", testRunId)), cancellationToken));
+            var supersedingTestRunId = supersedingTest.GetProperty("testRunId").GetString()!;
+            Assert.Equal(testRunId, supersedingTest.GetProperty("supersedesId").GetString());
+            Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("findingId", findingId), ("query", "filtered")), cancellationToken));
+            var revisedFinding = Success(await CallAsync(first.Client, "finding.record", Arguments(
+                ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
+                ("findingId", findingId), ("title", "Persisted runtime finding"), ("severity", "Info"), ("status", "Open"),
+                ("description", "Revised persistence marker."), ("source", Source("revised-test")), ("observedSnapshot", currentSnapshot),
+                ("expectedVersion", 1), ("expectedSnapshotToken", currentSnapshotToken)), cancellationToken));
+            Assert.Equal(2, revisedFinding.GetProperty("version").GetInt32());
+            var revisedDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("findingId", findingId)), cancellationToken));
+            var revisedDetailItem = Assert.Single(revisedDetail.GetProperty("findings").EnumerateArray());
+            Assert.Equal(2, revisedDetailItem.GetProperty("revision").GetInt32());
+            Assert.Equal("revised-test", revisedDetailItem.GetProperty("provenance").GetString());
+            Assert.False(revisedDetail.GetProperty("truncated").GetBoolean());
+            var storage = new SqliteContextStorage(new SqliteStorageOptions { DatabasePath = fixture.DatabasePath, ArtifactRoot = Path.Combine(Path.GetDirectoryName(fixture.DatabasePath)!, "artifacts") });
+            {
+                await storage.InitializeAsync(cancellationToken);
+                var references = await storage.ListMcpReferencesAsync(AIContextMCP.Core.McpRecordKind.TestRun,
+                    Guid.Parse(supersedingTestRunId), cancellationToken: cancellationToken);
+                Assert.Contains(references, reference => reference.Role == AIContextMCP.Core.McpReferenceRole.Supersedes
+                    && reference.Reference.Id == Guid.Parse(testRunId));
+            }
             Assert.Equal("InvalidInput", await ErrorCodeAsync(first.Client, "handoff.create", HandoffArguments(
                 projectId, null, currentSnapshot, null), cancellationToken));
             Assert.Equal("NotFound", await ErrorCodeAsync(first.Client, "handoff.create", HandoffArguments(
@@ -221,7 +283,7 @@ public sealed class McpRuntimeIntegrationTests
                 decisions: [RecordReference(projectId, repositoryId, decisionId)],
                 tests: [RecordReference(projectId, repositoryId, testRunId)],
                 findings: [RecordReference(projectId, repositoryId, findingId)]), cancellationToken)).GetProperty("handoffId").GetString()!;
-            await AssertPersistedRecordsAsync(first.Client, projectId, repositoryId, fixture.RepositoryPath, decisionId, testRunId, findingId, handoffId, cancellationToken);
+            await AssertPersistedRecordsAsync(first.Client, projectId, repositoryId, fixture.RepositoryPath, decisionId, supersedingTestRunId, findingId, handoffId, cancellationToken);
 
             const string secret = "password=synthetic-mcp-secret";
             Assert.Equal("SecretRejected", await ErrorCodeAsync(first.Client, "context.record", Arguments(
@@ -247,7 +309,7 @@ public sealed class McpRuntimeIntegrationTests
                     ("repositoryId", repositoryId),
                     ("maxResults", 100)), cancellationToken));
                 Assert.Equal(1, afterRestart.GetProperty("entries").EnumerateArray().Count(item => item.GetProperty("entryId").GetString() == cleanEntryId));
-                await AssertPersistedRecordsAsync(second.Client, projectId, repositoryId, fixture.RepositoryPath, decisionId, testRunId, findingId, handoffId, cancellationToken);
+                await AssertPersistedRecordsAsync(second.Client, projectId, repositoryId, fixture.RepositoryPath, decisionId, supersedingTestRunId, findingId, handoffId, cancellationToken);
 
                 await fixture.GitAsync(cancellationToken, "branch", "runtime-alt");
                 await fixture.GitAsync(cancellationToken, "checkout", "-q", "runtime-alt");
@@ -261,6 +323,13 @@ public sealed class McpRuntimeIntegrationTests
                     ("maxResults", 100)), cancellationToken));
                 Assert.Equal("Stale", Entry(branchChanged, branchEntryId).GetProperty("freshness").GetString());
                 await AssertContextCursorPaginationAsync(second.Client, projectId, repositoryId, branchChangedSnapshot, cancellationToken);
+                await fixture.GitAsync(cancellationToken, "update-ref", "-d", "HEAD");
+                var unbornSearch = Success(await CallAsync(second.Client, "context.search", Arguments(
+                    ("projectId", projectId), ("repositoryId", repositoryId), ("query", "Current branch observation.")), cancellationToken));
+                Assert.Equal("Unknown", Entry(unbornSearch, branchEntryId).GetProperty("freshness").GetString());
+                Assert.Contains(unbornSearch.GetProperty("warnings").EnumerateArray(), warning => warning.GetString() == "Repository state is unavailable; freshness is unknown.");
+                Assert.Equal("UnbornRepository", await ErrorCodeAsync(second.Client, "project.bootstrap", Arguments(
+                    ("repositoryPath", fixture.RepositoryPath)), cancellationToken));
             }
             finally
             {
@@ -296,7 +365,7 @@ public sealed class McpRuntimeIntegrationTests
                 await raw.WriteLineAsync("{" + "\"jsonrpc\":\"2.0\",\"id\":\"" + escapedId + "\",\"method\":\"tools/list\",\"params\":{}" + "}", cancellationToken);
                 var escapedResponse = await raw.ReadMessageAsync(cancellationToken);
                 Assert.Equal(escapedId, escapedResponse.Body.GetProperty("id").GetString());
-                Assert.True(Encoding.UTF8.GetByteCount(escapedResponse.Line) <= McpJson.ResponseBytes, "The escaped-ID tools/list response exceeded the protocol response limit.");
+                Assert.True(Encoding.UTF8.GetByteCount(escapedResponse.Line) <= McpJson.ResponseBytes, $"The escaped-ID tools/list response was {Encoding.UTF8.GetByteCount(escapedResponse.Line)} bytes and exceeded the {McpJson.ResponseBytes}-byte protocol response limit.");
 
                 await raw.WriteLineAsync("""{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}""", cancellationToken);
                 var listed = await raw.ReadMessageAsync(cancellationToken);
@@ -383,7 +452,7 @@ public sealed class McpRuntimeIntegrationTests
         Assert.Equal(1, validation.GetProperty("passed").GetInt64());
         var finding = SingleItem(bootstrap.GetProperty("findings"), "id", findingId);
         Assert.Equal("Persisted runtime finding", finding.GetProperty("title").GetString());
-        Assert.Equal("Persistence retrieval marker.", finding.GetProperty("summary").GetString());
+        Assert.Equal("Revised persistence marker.", finding.GetProperty("summary").GetString());
         var handoff = bootstrap.GetProperty("handoff");
         Assert.Equal(handoffId, handoff.GetProperty("handoffId").GetString());
         Assert.Equal("Persist the runtime handoff.", handoff.GetProperty("objective").GetString());
@@ -490,9 +559,9 @@ public sealed class McpRuntimeIntegrationTests
         value => value.Value is JsonElement element ? element.Clone() : JsonSerializer.SerializeToElement(value.Value, McpJson.Options),
         StringComparer.Ordinal);
 
-    private static Dictionary<string, object> Source() => new(StringComparer.Ordinal)
+    private static Dictionary<string, object> Source(string kind = "test") => new(StringComparer.Ordinal)
     {
-        ["kind"] = "test",
+        ["kind"] = kind,
         ["observedUtc"] = DateTimeOffset.UtcNow
     };
 

@@ -27,8 +27,10 @@ MCP client -> AIContextMCP -> Core -> SQLite + filesystem artifacts
 
 - Local stdio MCP transport with strict JSON contracts.
 - Git branch, HEAD, and working-tree freshness checks.
+- Explicit `UnbornRepository` results for initialized repositories that do not yet have a commit.
 - SQLite persistence with migrations, bounded records, and restart recovery.
-- Secret-shaped value rejection and bounded artifact storage.
+- Secret-shaped value rejection and bounded artifact storage, while ordinary credential-handling source files remain observable.
+- Branch-scoped context retrieval, direct current-finding lookup, and explicit validation-run supersession.
 - Safe degraded operation when the server is unavailable.
 
 ## MCP Tools
@@ -69,7 +71,7 @@ Use a local stdio registration whose command runs `dotnet` against the published
 
 Claude connects to the same local stdio server. After deploying a new published runtime, restart or reconnect the Claude MCP server so Claude refreshes `tools/list`; otherwise the client can retain an older tool catalog. The current build returns both text and structured MCP responses; the earlier empty-content/`Unknown error` behavior is fixed.
 
-For the first local registration, call `project_bootstrap` with the repository path and a unique request ID. `repositoryPath` is required for local registration. Omit `projectId` and `remote`; both `projectId` and `repositoryId` are server-issued UUIDs returned after registration. `remote` is optional and acts as a match constraint when supplied:
+For the first local registration, call `project_bootstrap` with the repository path and a unique request ID. Mutation request IDs use `<issued-UTC-epoch-seconds>:<lowercase-D-UUID>`, for example `1789852800:01234567-89ab-cdef-0123-456789abcdef`. `repositoryPath` is required for local registration. Omit `projectId` and `remote`; both `projectId` and `repositoryId` are server-issued UUIDs returned after registration. `remote` is optional and acts as a match constraint when supplied:
 
 ```json
 {
@@ -83,7 +85,9 @@ For inspection, use `register: false` (and normally `includeWorkingTree: true`).
 
 ## Usage Examples
 
-For a new repository, call `project_bootstrap` once with `register=true` and a request ID, then use `register=false` and `includeWorkingTree=true` for read-only bootstrap. Use `context_search` for a targeted topic. Record accepted decisions, test results, findings, and handoffs explicitly through their corresponding tools.
+For a new repository, call `project_bootstrap` once with `register=true` and a request ID, then use `register=false` and `includeWorkingTree=true` for read-only bootstrap. An initialized repository with no commit returns `UnbornRepository`; `PathRejected` remains reserved for unsafe, missing, or disallowed paths.
+
+Use `context_search` with `branch` to retrieve records for one branch, or with `findingId` to retrieve the current scoped finding revision and provenance. Configurable response budgets accept 8–32 KiB; `maxBytes` defaults to 16 KiB. When a newer validation replaces an older run, pass the older run as `supersedesId` to `test_record` so the relationship is stored explicitly. Record accepted decisions, findings, and handoffs through their corresponding tools.
 
 ## Persistent Storage
 

@@ -8,7 +8,7 @@ public static class ApplicationLimits
     public const int BootstrapBlockers = 6;
     public const int BootstrapReferences = 12;
     public const int BootstrapBytes = 16 * 1024;
-    public const int MinimumBootstrapBytes = 4 * 1024;
+    public const int MinimumBootstrapBytes = 8 * 1024;
     public const int SearchBytes = 32 * 1024;
 }
 
@@ -30,7 +30,8 @@ public enum ApplicationErrorCode
     SecretRejected,
     ContentTooLarge,
     NotFound,
-    Conflict
+    Conflict,
+    UnbornRepository
 }
 
 public sealed class ApplicationException(ApplicationErrorCode code, string message, string? diagnostic = null, Exception? innerException = null) : Exception(message, innerException)

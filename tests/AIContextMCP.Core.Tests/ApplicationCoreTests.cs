@@ -154,6 +154,27 @@ public sealed class ApplicationCoreTests
         Assert.Equal(RecordFreshness.Stale, staleBootstrap.LatestValidation?.Freshness);
     }
 
+    [Fact]
+    public async Task Read_paths_degrade_when_a_registered_repository_becomes_unborn()
+    {
+        using var harness = await ApplicationHarness.CreateAsync();
+        var scope = await harness.Application.ResolveProjectAsync(new ProjectResolutionRequest(harness.RepositoryPath, Register: true));
+        var context = await harness.Application.RecordContextAsync(new ContextRecordRequest(
+            scope.Project.Id, scope.Repository.Id, "context", "title", "summary", "body"));
+        var decision = await harness.Application.RecordDecisionAsync(new DecisionRecordRequest(
+            scope.Project.Id, scope.Repository.Id, "architecture", "core", "title", "decision", "rationale"));
+
+        harness.RunGit("update-ref", "-d", "HEAD");
+
+        var search = await harness.Application.SearchContextAsync(new ContextSearchRequest(scope.Project.Id, scope.Repository.Id));
+        var decisions = await harness.Application.ListDecisionsAsync(new DecisionListRequest(scope.Project.Id, scope.Repository.Id));
+        Assert.Contains(search.Entries, item => item.Id == context.Id && item.Freshness == RecordFreshness.Unknown);
+        Assert.Contains(decisions.Decisions, item => item.Id == decision.Id && item.Freshness == RecordFreshness.Unknown);
+        Assert.Contains(search.Warnings, warning => warning.Contains("freshness is unknown", StringComparison.Ordinal));
+        var bootstrap = await Assert.ThrowsAsync<ApplicationException>(() => harness.Application.BootstrapAsync(new ProjectBootstrapRequest(harness.RepositoryPath)));
+        Assert.Equal(ApplicationErrorCode.UnbornRepository, bootstrap.Code);
+    }
+
     private sealed class ApplicationHarness : IDisposable
     {
         private readonly ControlledGitFixture _fixture;

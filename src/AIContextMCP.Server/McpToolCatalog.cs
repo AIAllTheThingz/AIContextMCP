@@ -11,8 +11,8 @@ internal static class McpToolCatalog
 {
     private static readonly IReadOnlyList<McpToolDescriptor> Items =
     [
-        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect repositoryPath (register=false); register=true needs requestId. IDs are server UUIDs; NotFound => register path.", false),
-        Tool<ContextSearch, SearchResult>("context.search", "Search bounded project context records in observed-time order.", true),
+        Tool<ProjectRef, Bootstrap>("project.bootstrap", "Inspect repositoryPath (register=false); register=true needs requestId. Unborn repositories are distinct from rejected paths.", false),
+        Tool<ContextSearch, SearchResult>("context.search", "Search bounded context; branch-scoped retrieval and optional finding detail.", true),
         Tool<ContextRecord, RecordReceipt>("context.record", "Record bounded repository context and its verified observation.", false),
         Tool<DecisionList, DecisionListResult>("decision.list", "List bounded project decisions in observed-time order.", true),
         Tool<DecisionRecord, DecisionReceipt>("decision.record", "Record a versioned decision and verified observation.", false),
@@ -27,14 +27,14 @@ internal static class McpToolCatalog
 
     private static McpToolDescriptor Tool<TInput, TOutput>(string name, string description, bool readOnly) where TOutput : class
     {
-        return new McpToolDescriptor(name, description, readOnly, Schema<TInput>(), Schema<ToolEnvelope<TOutput>>());
+        return new McpToolDescriptor(name, description, readOnly, Schema<TInput>(), Schema<ToolEnvelope<TOutput>>(false));
     }
 
-    private static JsonElement Schema<T>()
+    private static JsonElement Schema<T>(bool applyLimits = true)
     {
         var schema = McpJson.SchemaOptions.GetJsonSchemaAsNode(typeof(T), new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true })?.AsObject()
             ?? throw new InvalidOperationException("Schema could not be generated.");
-        Constrain(schema, null);
+        Constrain(schema, null, applyLimits);
         if (typeof(T) == typeof(ProjectRef)) AddBootstrapDescriptions(schema);
         return JsonSerializer.SerializeToElement<JsonNode>(schema, McpJson.Options);
     }
@@ -60,11 +60,11 @@ internal static class McpToolCatalog
         };
     }
 
-    private static void Constrain(JsonNode? node, string? name)
+    private static void Constrain(JsonNode? node, string? name, bool applyLimits)
     {
         if (node is JsonArray array)
         {
-            foreach (var item in array) Constrain(item, name);
+            foreach (var item in array) Constrain(item, name, applyLimits);
             return;
         }
 
@@ -72,41 +72,41 @@ internal static class McpToolCatalog
         if (value["properties"] is JsonObject) value["additionalProperties"] = false;
         if (value["type"] is JsonValue type && type.TryGetValue<string>(out var typeName))
         {
-            if (typeName == "string" && value["maxLength"] is null) value["maxLength"] = StringLimit(name);
-            if (typeName == "array" && value["maxItems"] is null) value["maxItems"] = StorageLimits.CollectionCount;
+            if (applyLimits && typeName == "string" && value["maxLength"] is null) value["maxLength"] = StringLimit(name);
+            if (applyLimits && typeName == "array" && value["maxItems"] is null) value["maxItems"] = StorageLimits.CollectionCount;
         }
 
-        if (name is "maxResults")
+        if (applyLimits && name is "maxResults")
         {
             value["minimum"] = 1;
             value["maximum"] = StorageLimits.CollectionCount;
         }
-        else if (name is "maxBytes")
+        else if (applyLimits && name is "maxBytes")
         {
-            value["minimum"] = 1;
+            value["minimum"] = McpJson.MinimumResponseBytes;
             value["maximum"] = McpJson.ResponseBytes;
         }
-        else if (name is "tier")
+        else if (applyLimits && name is "tier")
         {
             value["minimum"] = 1;
             value["maximum"] = 3;
         }
-        else if (name is "durationMs")
+        else if (applyLimits && name is "durationMs")
         {
             value["minimum"] = 0;
             value["maximum"] = 604_800_000;
         }
-        else if (name is "passed" or "failed" or "skipped")
+        else if (applyLimits && name is ("passed" or "failed" or "skipped"))
         {
             value["minimum"] = 0;
             value["maximum"] = 1_000_000_000;
         }
-        else if (name is "expectedVersion")
+        else if (applyLimits && name is "expectedVersion")
         {
             value["minimum"] = 1;
         }
 
-        foreach (var property in value.ToArray()) Constrain(property.Value, property.Key);
+        foreach (var property in value.ToArray()) Constrain(property.Value, property.Key, applyLimits);
     }
 
     private static int StringLimit(string? name) => name switch
