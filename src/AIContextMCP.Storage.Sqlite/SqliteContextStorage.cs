@@ -51,6 +51,7 @@ public sealed class SqliteContextStorage : IAIContextStorage
                 await SqliteSchema.ApplyVersionTwoAsync(connection, transaction, cancellationToken);
                 await SqliteSchema.ApplyVersionThreeAsync(connection, transaction, cancellationToken);
                 await SqliteSchema.ApplyVersionFourAsync(connection, transaction, cancellationToken);
+                await SqliteSchema.ApplyVersionFiveAsync(connection, transaction, cancellationToken);
                 await InsertSchemaVersionAsync(connection, transaction, SqliteSchema.CurrentVersion, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
             }
@@ -747,6 +748,15 @@ public sealed class SqliteContextStorage : IAIContextStorage
             if (version is 1 or 2 or 3)
             {
                 await SqliteSchema.ApplyVersionFourAsync(connection, transaction, cancellationToken);
+                await SqliteSchema.ApplyVersionFiveAsync(connection, transaction, cancellationToken);
+            }
+            else if (version == 4)
+            {
+                await SqliteSchema.ApplyVersionFiveAsync(connection, transaction, cancellationToken);
+            }
+
+            if (version is 1 or 2 or 3 or 4)
+            {
                 await using var update = Command(connection, "UPDATE SchemaVersion SET Version = $version, MigrationId = $migrationId, AppliedUtc = $appliedUtc WHERE Version = $previousVersion;");
                 update.Transaction = transaction;
                 Add(update, "$version", SqliteSchema.CurrentVersion);
@@ -1095,6 +1105,62 @@ public sealed class SqliteContextStorage : IAIContextStorage
             Add(command, "$phaseId", NullableId(entry.PhaseId));
             await ExecuteAsync(command, token);
             return new ContextEntryRecord(entry.Id, entry.ProjectId, entry.RepositoryId, entry.Category, entry.Title, entry.Summary, entry.Content, entry.AuthoritativeReference, entry.Branch, entry.CommitSha, entry.Status, entry.ContentHash, now, now, supersededUtc, entry.Tier, entry.Objective, entry.PhaseId);
+        }, cancellationToken);
+    }
+
+    public async Task SupersedeContextEntryAsync(Guid id, Guid projectId, Guid? repositoryId, Guid supersededById, CancellationToken cancellationToken = default)
+    {
+        RequireId(id, "context entry id");
+        RequireId(projectId, "project id");
+        RequireOptionalId(repositoryId, "repository id");
+        RequireId(supersededById, "superseding context entry id");
+        if (id == supersededById) throw new StorageException(StorageErrorCode.Conflict, "Context entry cannot supersede itself.");
+        await ExecuteTransactionalWriteAsync(async (connection, transaction, token) =>
+        {
+            await using var successor = Command(connection, "SELECT ProjectId, RepositoryId FROM ContextEntries WHERE Id = $id;");
+            successor.Transaction = transaction;
+            Add(successor, "$id", Id(supersededById));
+            await using var successorReader = await ExecuteReaderAsync(successor, token);
+            if (!await ReadAsync(successorReader, token)) throw new StorageException(StorageErrorCode.NotFound, "Superseding context entry was not found.");
+            var successorProject = successorReader.GetString(0);
+            var successorRepository = successorReader.IsDBNull(1) ? null : successorReader.GetString(1);
+            if (!string.Equals(successorProject, Id(projectId), StringComparison.Ordinal)
+                || !string.Equals(successorRepository, NullableId(repositoryId), StringComparison.Ordinal))
+            {
+                throw new StorageException(StorageErrorCode.CrossProjectReference, "Context supersession must remain within the same project and repository scope.");
+            }
+
+            await using var update = Command(connection, """
+                UPDATE ContextEntries
+                SET Status = $status, UpdatedUtc = $updatedUtc, SupersededUtc = $supersededUtc
+                WHERE Id = $id AND ProjectId = $projectId
+                  AND ((RepositoryId IS NULL AND $repositoryId IS NULL) OR RepositoryId = $repositoryId)
+                  AND Status = $active AND SupersededUtc IS NULL;
+                """);
+            update.Transaction = transaction;
+            var now = UtcNow();
+            Add(update, "$status", (int)ContextStatus.Superseded);
+            Add(update, "$updatedUtc", Timestamp(now));
+            Add(update, "$supersededUtc", Timestamp(now));
+            Add(update, "$id", Id(id));
+            Add(update, "$projectId", Id(projectId));
+            Add(update, "$repositoryId", NullableId(repositoryId));
+            Add(update, "$active", (int)ContextStatus.Active);
+            if (await ExecuteCountAsync(update, token) == 1) return true;
+
+            await using var exists = Command(connection, "SELECT ProjectId, RepositoryId, Status FROM ContextEntries WHERE Id = $id;");
+            exists.Transaction = transaction;
+            Add(exists, "$id", Id(id));
+            await using var reader = await ExecuteReaderAsync(exists, token);
+            if (!await ReadAsync(reader, token)) throw new StorageException(StorageErrorCode.NotFound, "Context entry to supersede was not found.");
+            var foundProject = reader.GetString(0);
+            var foundRepository = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (!string.Equals(foundProject, Id(projectId), StringComparison.Ordinal)
+                || !string.Equals(foundRepository, NullableId(repositoryId), StringComparison.Ordinal))
+            {
+                throw new StorageException(StorageErrorCode.CrossProjectReference, "Context supersession must remain within the same project and repository scope.");
+            }
+            throw new StorageException(StorageErrorCode.Conflict, "Context entry has already been superseded or is not active.");
         }, cancellationToken);
     }
 
@@ -2033,6 +2099,7 @@ public sealed class SqliteContextStorage : IAIContextStorage
             if (query.Branch is not null) sql.Append(" AND entry.Branch = $branch");
             if (query.CommitSha is not null) sql.Append(" AND entry.CommitSha = $commitSha");
             if (query.Status is not null) sql.Append(" AND entry.Status = $status");
+            else sql.Append(" AND entry.Status <> $superseded");
             if (query.SinceUtc is not null) sql.Append($" AND {observed} >= $sinceUtc");
             if (query.Text is not null) sql.Append(" AND (entry.Title LIKE $text ESCAPE '\\' OR entry.Summary LIKE $text ESCAPE '\\')");
             if (query.BeforeObservedUtc is not null) sql.Append($" AND ({observed} < $beforeObservedUtc OR ({observed} = $beforeObservedUtc AND entry.Id > $afterRecordId))");
@@ -2045,6 +2112,7 @@ public sealed class SqliteContextStorage : IAIContextStorage
             if (query.Branch is not null) Add(command, "$branch", query.Branch);
             if (query.CommitSha is not null) Add(command, "$commitSha", query.CommitSha);
             if (query.Status is { } status) Add(command, "$status", (int)status);
+            else Add(command, "$superseded", (int)ContextStatus.Superseded);
             if (query.SinceUtc is { } sinceUtc) Add(command, "$sinceUtc", Timestamp(sinceUtc));
             if (query.Text is not null) Add(command, "$text", $"%{EscapeLike(query.Text)}%");
             if (query.BeforeObservedUtc is { } beforeObservedUtc)

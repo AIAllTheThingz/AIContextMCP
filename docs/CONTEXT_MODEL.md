@@ -20,7 +20,9 @@ Retention and compaction are planned: retain current summaries and references, a
 
 ## Historical V1 schema design
 
-The following V1 schema is retained as historical design guidance. The current implementation is SQLite V4. IDs, timestamps, and revision behavior below describe the earlier design and must not be read as the current column set.
+The following V1 schema is retained as historical design guidance. The current implementation is SQLite V5. IDs, timestamps, and revision behavior below describe the earlier design and must not be read as the current column set.
+
+The V5 data-only migration retires active predecessors only for exact-scope, valid supersession references and preserves observations and historical rows. Default context search excludes superseded entries; an explicit superseded status retrieves that history. Rollback to an older executable requires a database backup taken before the V5 migration.
 
 | Table | Columns and key behavior |
 |---|---|
@@ -35,7 +37,7 @@ The following V1 schema is retained as historical design guidance. The current i
 | `Artifacts` | `Id` primary key, `ProjectId`, optional `RepositoryId`, `ArtifactType`, `Title`, `Reference`, `ContentHash`, `SizeBytes`, `Branch`, `CommitSha`, timestamps; unique `(ProjectId, Reference, ContentHash)` |
 | `Handoffs` | `Id` primary key, `ProjectId`, optional `RepositoryId`, `Branch`, `CommitSha`, bounded handoff text fields, JSON reference lists, timestamps |
 
-V1 created these tables and indexes in one transaction; later V2–V4 migrations added repository state, replay receipts, MCP record observations/references, and current extension columns. Unsupported or malformed state is rejected. The current V4 implementation provides storage-backed MCP operations; automated backup remains future work.
+V1 created these tables and indexes in one transaction; later V2–V5 migrations added repository state, replay receipts, MCP record observations/references, current extension columns, and bounded supersession repair. Unsupported or malformed state is rejected. The current V5 implementation provides storage-backed MCP operations; automated backup remains future work.
 
 ## Planned context model
 

@@ -81,6 +81,38 @@ public sealed class McpRuntimeIntegrationTests
                 ("source", Source()),
                 ("observedSnapshot", cleanSnapshot));
             var cleanEntryId = Success(await CallAsync(first.Client, "context.record", cleanRecord, cancellationToken)).GetProperty("entryId").GetString()!;
+            var replacementRecord = Arguments(
+                ("requestId", RequestId()),
+                ("projectId", projectId),
+                ("repositoryId", repositoryId),
+                ("category", "context"),
+                ("summary", "Replacement repository observation."),
+                ("source", Source()),
+                ("observedSnapshot", cleanSnapshot),
+                ("supersedesId", cleanEntryId),
+                ("expectedVersion", 1),
+                ("expectedSnapshotToken", cleanSnapshot.GetProperty("snapshotToken").GetString()));
+            var replacementEntryId = Success(await CallAsync(first.Client, "context.record", replacementRecord, cancellationToken)).GetProperty("entryId").GetString()!;
+            var replayedReplacement = Success(await CallAsync(first.Client, "context.record", replacementRecord, cancellationToken));
+            Assert.Equal(replacementEntryId, replayedReplacement.GetProperty("entryId").GetString());
+            Assert.Equal("Conflict", await ErrorCodeAsync(first.Client, "context.record", Arguments(
+                ("requestId", RequestId()),
+                ("projectId", projectId),
+                ("repositoryId", repositoryId),
+                ("category", "context"),
+                ("summary", "Competing replacement."),
+                ("source", Source()),
+                ("observedSnapshot", cleanSnapshot),
+                ("supersedesId", cleanEntryId),
+                ("expectedVersion", 1),
+                ("expectedSnapshotToken", cleanSnapshot.GetProperty("snapshotToken").GetString())), cancellationToken));
+            var currentAfterSupersession = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("maxResults", 100)), cancellationToken));
+            Assert.DoesNotContain(currentAfterSupersession.GetProperty("entries").EnumerateArray(), item => item.GetProperty("entryId").GetString() == cleanEntryId);
+            Assert.Contains(currentAfterSupersession.GetProperty("entries").EnumerateArray(), item => item.GetProperty("entryId").GetString() == replacementEntryId);
+            var supersededLookup = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("status", "Superseded"), ("maxResults", 100)), cancellationToken));
+            Assert.Contains(supersededLookup.GetProperty("entries").EnumerateArray(), item => item.GetProperty("entryId").GetString() == cleanEntryId);
 
             await File.WriteAllTextAsync(fixture.ReadmePath, "dirty\n", cancellationToken);
             var dirtyBootstrap = Success(await CallAsync(first.Client, "project.bootstrap", Arguments(("repositoryPath", fixture.RepositoryPath)), cancellationToken));
@@ -100,7 +132,7 @@ public sealed class McpRuntimeIntegrationTests
                 ("projectId", projectId),
                 ("repositoryId", repositoryId),
                 ("maxResults", 100)), cancellationToken));
-            Assert.Equal("Current", Entry(restored, cleanEntryId).GetProperty("freshness").GetString());
+            Assert.Equal("Current", Entry(restored, replacementEntryId).GetProperty("freshness").GetString());
             Assert.Equal("Stale", Entry(restored, dirtyEntryId).GetProperty("freshness").GetString());
 
             await File.WriteAllTextAsync(fixture.ReadmePath, "changed head\n", cancellationToken);
@@ -110,7 +142,7 @@ public sealed class McpRuntimeIntegrationTests
                 ("projectId", projectId),
                 ("repositoryId", repositoryId),
                 ("maxResults", 100)), cancellationToken));
-            Assert.Equal("Stale", Entry(changedHead, cleanEntryId).GetProperty("freshness").GetString());
+            Assert.Equal("Stale", Entry(changedHead, replacementEntryId).GetProperty("freshness").GetString());
 
             var currentBootstrap = Success(await CallAsync(first.Client, "project.bootstrap", Arguments(("repositoryPath", fixture.RepositoryPath)), cancellationToken));
             var currentSnapshot = currentBootstrap.GetProperty("git").Clone();
@@ -308,7 +340,7 @@ public sealed class McpRuntimeIntegrationTests
                     ("projectId", projectId),
                     ("repositoryId", repositoryId),
                     ("maxResults", 100)), cancellationToken));
-                Assert.Equal(1, afterRestart.GetProperty("entries").EnumerateArray().Count(item => item.GetProperty("entryId").GetString() == cleanEntryId));
+                Assert.Equal(1, afterRestart.GetProperty("entries").EnumerateArray().Count(item => item.GetProperty("entryId").GetString() == replacementEntryId));
                 await AssertPersistedRecordsAsync(second.Client, projectId, repositoryId, fixture.RepositoryPath, decisionId, supersedingTestRunId, findingId, handoffId, cancellationToken);
 
                 await fixture.GitAsync(cancellationToken, "branch", "runtime-alt");

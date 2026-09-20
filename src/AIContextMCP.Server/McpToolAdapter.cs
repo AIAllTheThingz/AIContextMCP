@@ -872,10 +872,9 @@ internal sealed class McpToolAdapter
                 if (request.SupersedesId is not null)
                 {
                     var predecessorId = McpJson.RequiredId(request.SupersedesId, "supersedes id");
-                    var predecessor = await storage.GetContextEntryAsync(predecessorId, token) ?? throw new McpInputException("NotFound", "Superseded context was not found.");
-                    EnsureReferencedScope(scope, predecessor.ProjectId, predecessor.RepositoryId);
+                    await storage.SupersedeContextEntryAsync(predecessorId, scope.Project.Id, scope.Repository?.Id, entry.Id, token);
                     await adapter.PersistReferencesAsync(storage, McpRecordKind.ContextEntry, entry.Id, 1, McpReferenceRole.Supersedes,
-                        [new Reference(scope.Project.Id.ToString("D"), "record", predecessor.RepositoryId?.ToString("D"), predecessor.Id.ToString("D"))], scope, token);
+                        [new Reference(scope.Project.Id.ToString("D"), "record", scope.Repository?.Id.ToString("D"), predecessorId.ToString("D"))], scope, token);
                 }
 
                 return SuccessJson(new RecordReceipt(entry.Id.ToString("D"), "Recorded", entry.CreatedUtc, updatedPhase?.Version ?? 1), correlationId, McpJson.ResponseBytes);
