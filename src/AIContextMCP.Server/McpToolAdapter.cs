@@ -370,7 +370,7 @@ internal sealed class McpToolAdapter
 
     private static IReadOnlyList<string> FreshnessWarnings(GitRepositoryState? git) => git is null
         ? ["Repository state is unavailable; freshness is unknown."]
-        : git.WorkingTree == WorkingTreeState.Clean ? [] : ["Working-tree state is not clean; freshness is unknown."];
+        : git.WorkingTree == WorkingTreeState.Clean ? [] : [git.WorkingTreeWarning ?? "Working-tree state is not clean; freshness is unknown."];
 
     private (DateTimeOffset? ObservedUtc, Guid? RecordId) ReadCursor(string cursor, Scope scope, string filterHash)
     {

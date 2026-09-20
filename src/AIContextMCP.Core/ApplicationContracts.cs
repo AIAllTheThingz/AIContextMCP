@@ -78,7 +78,8 @@ public sealed record GitRepositoryState(
     string? Organization,
     string RepositoryName,
     WorkingTreeState WorkingTree,
-    string? WorkingTreeFingerprint = null);
+    string? WorkingTreeFingerprint = null,
+    string? WorkingTreeWarning = null);
 
 public sealed record ProjectIdentity(Guid Id, string StableProjectId, string Name);
 public sealed record RepositoryIdentity(Guid Id, string CanonicalPath, string? Remote, string RepositoryName);

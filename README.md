@@ -103,7 +103,7 @@ Bootstrap returns a compact current-state projection. Retrieve Tier 2 records on
 
 ## Known Limitations
 
-The server is local and uses stdio; it does not provide remote access, authentication, embeddings, vector search, or organization-wide repository migration. Some unsupported Git metadata layouts are reported as unknown or rejected conservatively. The implementation reads Git metadata directly; Git on `PATH` is needed for the documented build/test workflow and fixtures.
+The server is local and uses stdio; it does not provide remote access, authentication, embeddings, vector search, or organization-wide repository migration. Working-tree inspection supports bounded tracked source screening, UTF-8 text, and a small root `.gitignore` subset (root literals and simple `*` basename globs); advanced, malformed, nested, packed-object, and over-limit layouts return `Unknown` with a warning reason. The limits are bounded safety heuristics, not universal Git compatibility. The implementation reads Git metadata directly; Git on `PATH` is needed for the documented build/test workflow and fixtures.
 
 ## Development
 
