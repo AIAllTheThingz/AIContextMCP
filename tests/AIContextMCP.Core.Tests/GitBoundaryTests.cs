@@ -60,6 +60,71 @@ public sealed class GitBoundaryTests
     }
 
     [Theory]
+    [InlineData("true", WorkingTreeState.Clean)]
+    [InlineData("false", WorkingTreeState.Dirty)]
+    [InlineData("on", WorkingTreeState.Clean)]
+    [InlineData("off", WorkingTreeState.Dirty)]
+    public async Task Inspector_applies_git_ignore_case_setting(string ignoreCase, WorkingTreeState expected)
+    {
+        using var fixture = new ControlledGitFixture();
+        fixture.Run("config", "core.ignoreCase", ignoreCase);
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), "*.TMP\n", new UTF8Encoding(false));
+        fixture.Run("add", ".gitignore");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "ignore case");
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "ignored.tmp"), "ignored\n", new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(expected, state.WorkingTree);
+        Assert.Equal(expected == WorkingTreeState.Dirty, fixture.Run("status", "--porcelain").Contains("ignored.tmp", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("ignoreCase\n", WorkingTreeState.Clean)]
+    [InlineData("ignoreCase =\n", WorkingTreeState.Dirty)]
+    [InlineData("ignoreCase unexpected\n", WorkingTreeState.Unknown)]
+    public async Task Inspector_handles_bare_or_malformed_git_ignore_case(string setting, WorkingTreeState expected)
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), "*.TMP\n", new UTF8Encoding(false));
+        fixture.Run("add", ".gitignore");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "ignore case syntax");
+        fixture.Run("config", "core.ignoreCase", expected == WorkingTreeState.Clean ? "false" : "true");
+        File.AppendAllText(Path.Combine(fixture.RepositoryPath, ".git", "config"), $"\n[core]\n{setting}", new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "ignored.tmp"), "ignored\n", new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(expected, state.WorkingTree);
+        if (expected == WorkingTreeState.Unknown) Assert.NotNull(state.WorkingTreeWarning);
+        else Assert.Equal(expected == WorkingTreeState.Dirty, fixture.Run("status", "--porcelain").Contains("ignored.tmp", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("\uFEFFignored.tmp\n")]
+    [InlineData("\uFEFF# comment\nignored.tmp\n")]
+    public async Task Inspector_strips_only_a_leading_gitignore_bom(string ignore)
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), ignore, new UTF8Encoding(false));
+        fixture.Run("add", ".gitignore");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "bom ignore");
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "ignored.tmp"), "ignored\n", new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Clean, state.WorkingTree);
+        Assert.Empty(fixture.Run("status", "--porcelain"));
+    }
+
+    [Fact]
+    public async Task Inspector_does_not_strip_bom_from_later_gitignore_rule()
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), "ignored.tmp\n\uFEFFother.tmp\n", new UTF8Encoding(false));
+        fixture.Run("add", ".gitignore");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "later bom");
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "other.tmp"), "not ignored\n", new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Dirty, state.WorkingTree);
+        Assert.Contains("other.tmp", fixture.Run("status", "--porcelain"), StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("ignored.tmp\r\r\n")]
     [InlineData("//ignored.tmp\n")]
     [InlineData("/ignored.tmp//\n")]
