@@ -4,7 +4,7 @@ namespace AIContextMCP.Storage.Sqlite;
 
 internal static class SqliteSchema
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public static readonly IReadOnlySet<string> RequiredTables = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -48,7 +48,7 @@ internal static class SqliteSchema
     {
         1 or 2 => new HashSet<string>(RequiredTables.Except(["MutationReceipts", "McpRecordObservations", "McpRecordReferences"]), StringComparer.Ordinal),
         3 => new HashSet<string>(RequiredTables.Except(["McpRecordObservations", "McpRecordReferences"]), StringComparer.Ordinal),
-        4 => RequiredTables,
+        4 or 5 => RequiredTables,
         _ => new HashSet<string>(StringComparer.Ordinal)
     };
 
@@ -57,13 +57,13 @@ internal static class SqliteSchema
         1 => new HashSet<string>(RequiredIndexes.Where(index => index is not "IX_Decisions_Repository_Branch_CommitSha" and not "IX_Findings_Repository_Branch_CommitSha" and not "IX_MutationReceipts_ExpiresUtc" and not "IX_McpRecordObservations_Project_Kind_ObservedUtc_Id" and not "IX_McpRecordReferences_ReferenceScope"), StringComparer.Ordinal),
         2 => new HashSet<string>(RequiredIndexes.Except(["IX_MutationReceipts_ExpiresUtc", "IX_McpRecordObservations_Project_Kind_ObservedUtc_Id", "IX_McpRecordReferences_ReferenceScope"]), StringComparer.Ordinal),
         3 => new HashSet<string>(RequiredIndexes.Except(["IX_McpRecordObservations_Project_Kind_ObservedUtc_Id", "IX_McpRecordReferences_ReferenceScope"]), StringComparer.Ordinal),
-        4 => RequiredIndexes,
+        4 or 5 => RequiredIndexes,
         _ => new HashSet<string>(StringComparer.Ordinal)
     };
 
     public static IReadOnlyDictionary<string, IReadOnlySet<string>> GetRequiredColumns(int version)
     {
-        if (version == 4)
+        if (version is 4 or 5)
         {
             return RequiredColumns;
         }
@@ -87,7 +87,7 @@ internal static class SqliteSchema
             StringComparer.Ordinal);
     }
 
-    public static IReadOnlyDictionary<string, int> GetMinimumForeignKeys(int version) => version == 4
+    public static IReadOnlyDictionary<string, int> GetMinimumForeignKeys(int version) => version is 4 or 5
         ? MinimumForeignKeys
         : MinimumForeignKeys
             .Where(pair => pair.Key is not "McpRecordObservations" and not "McpRecordReferences")
@@ -404,6 +404,54 @@ internal static class SqliteSchema
                 ON McpRecordObservations(ProjectId, RecordKind, RecordObservedUtc DESC, RecordId ASC);
             CREATE INDEX IX_McpRecordReferences_ReferenceScope
                 ON McpRecordReferences(ReferencedProjectId, ReferencedRepositoryId, Kind, ReferenceId);
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public static async Task ApplyVersionFiveAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE ContextEntries AS predecessor
+            SET Status = 1,
+                SupersededUtc = (
+                    SELECT MIN(successor.CreatedUtc)
+                    FROM McpRecordReferences reference
+                    JOIN ContextEntries successor ON successor.Id = reference.RecordId
+                    WHERE reference.RecordKind = 0 AND reference.Revision = 1 AND reference.Role = 2 AND reference.Kind = 'record'
+                      AND reference.ReferenceId = predecessor.Id
+                      AND reference.ReferencedProjectId = predecessor.ProjectId
+                      AND ((reference.ReferencedRepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR reference.ReferencedRepositoryId = predecessor.RepositoryId)
+                      AND successor.ProjectId = predecessor.ProjectId
+                      AND ((successor.RepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR successor.RepositoryId = predecessor.RepositoryId)
+                      AND successor.Id <> predecessor.Id
+                ),
+                UpdatedUtc = (
+                    SELECT MIN(successor.CreatedUtc)
+                    FROM McpRecordReferences reference
+                    JOIN ContextEntries successor ON successor.Id = reference.RecordId
+                    WHERE reference.RecordKind = 0 AND reference.Revision = 1 AND reference.Role = 2 AND reference.Kind = 'record'
+                      AND reference.ReferenceId = predecessor.Id
+                      AND reference.ReferencedProjectId = predecessor.ProjectId
+                      AND ((reference.ReferencedRepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR reference.ReferencedRepositoryId = predecessor.RepositoryId)
+                      AND successor.ProjectId = predecessor.ProjectId
+                      AND ((successor.RepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR successor.RepositoryId = predecessor.RepositoryId)
+                      AND successor.Id <> predecessor.Id
+                )
+            WHERE predecessor.Status = 0 AND predecessor.SupersededUtc IS NULL
+              AND EXISTS (
+                    SELECT 1
+                    FROM McpRecordReferences reference
+                    JOIN ContextEntries successor ON successor.Id = reference.RecordId
+                    WHERE reference.RecordKind = 0 AND reference.Revision = 1 AND reference.Role = 2 AND reference.Kind = 'record'
+                      AND reference.ReferenceId = predecessor.Id
+                      AND reference.ReferencedProjectId = predecessor.ProjectId
+                      AND ((reference.ReferencedRepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR reference.ReferencedRepositoryId = predecessor.RepositoryId)
+                      AND successor.ProjectId = predecessor.ProjectId
+                      AND ((successor.RepositoryId IS NULL AND predecessor.RepositoryId IS NULL) OR successor.RepositoryId = predecessor.RepositoryId)
+                      AND successor.Id <> predecessor.Id
+                );
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

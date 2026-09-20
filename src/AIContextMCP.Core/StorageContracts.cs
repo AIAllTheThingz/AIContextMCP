@@ -509,6 +509,7 @@ public interface IProjectStore
 public interface IContextEntryStore
 {
     Task<ContextEntryRecord> CreateContextEntryAsync(ContextEntryDraft entry, CancellationToken cancellationToken = default);
+    Task SupersedeContextEntryAsync(Guid id, Guid projectId, Guid? repositoryId, Guid supersededById, CancellationToken cancellationToken = default);
     Task<ContextEntryRecord?> GetContextEntryAsync(Guid id, CancellationToken cancellationToken = default);
     Task<ContextEntryRecord?> GetContextEntryByContentHashAsync(Guid projectId, Guid? repositoryId, string contentHash, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ContextEntryRecord>> ListContextEntriesAsync(ContextEntryQuery query, CancellationToken cancellationToken = default);

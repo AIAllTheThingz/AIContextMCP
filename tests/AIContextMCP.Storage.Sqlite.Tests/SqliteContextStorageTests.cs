@@ -16,7 +16,7 @@ public sealed class SqliteContextStorageTests
         await using var database = TemporaryDatabase.Create();
         await database.Storage.InitializeAsync();
 
-        Assert.Equal(4, await database.Storage.GetSchemaVersionAsync());
+        Assert.Equal(5, await database.Storage.GetSchemaVersionAsync());
         await using var connection = await OpenAsync(database.DatabasePath);
         var tables = await StringsAsync(connection, "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;");
         Assert.Subset(tables.ToHashSet(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal)
@@ -90,7 +90,7 @@ public sealed class SqliteContextStorageTests
         }
 
         await database.Storage.InitializeAsync();
-        Assert.Equal(4, await database.Storage.GetSchemaVersionAsync());
+        Assert.Equal(5, await database.Storage.GetSchemaVersionAsync());
         Assert.Equal(project, await database.Storage.GetProjectAsync(project.Id));
         Assert.Equal(repository, await database.Storage.GetRepositoryAsync(repository.Id));
         var decision = await database.Storage.CreateDecisionAsync(new DecisionDraft(Guid.NewGuid(), project.Id, repository.Id, "architecture", "core", "v3", "store branch", "because scope", null, null, "abcdef1", DecisionStatus.Accepted, null, "main"));
@@ -157,6 +157,75 @@ public sealed class SqliteContextStorageTests
         Assert.Equal(StorageErrorCode.SecretRejected, commandError.Code);
         var jsonSecret = await Assert.ThrowsAsync<StorageException>(() => database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, repository.Id, "documentation", "title", "summary", "{\"password\":\"synthetic-only\"}", null, null, null, ContextStatus.Active, null)));
         Assert.Equal(StorageErrorCode.SecretRejected, jsonSecret.Code);
+    }
+
+    [Fact]
+    public async Task ContextEntriesSupersedeTransactionallyAndRetainHistory()
+    {
+        await using var database = TemporaryDatabase.Create();
+        await database.Storage.InitializeAsync();
+        var project = await database.Storage.CreateProjectAsync(Project());
+        var predecessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "old", "old", null, null, "main", "0123456", ContextStatus.Active, Hash));
+        var replacement = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "new", "new", null, null, "main", "0123456", ContextStatus.Active, Hash[..63] + "0"));
+        await database.Storage.SupersedeContextEntryAsync(predecessor.Id, project.Id, null, replacement.Id);
+
+        Assert.Equal(ContextStatus.Superseded, (await database.Storage.GetContextEntryAsync(predecessor.Id))!.Status);
+        Assert.Single(await database.Storage.ListContextEntriesAsync(new ContextEntryQuery(project.Id, Status: ContextStatus.Active)));
+        Assert.Single(await database.Storage.ListContextEntriesAsync(new ContextEntryQuery(project.Id, Status: ContextStatus.Superseded)));
+        var duplicate = await Assert.ThrowsAsync<StorageException>(() => database.Storage.SupersedeContextEntryAsync(predecessor.Id, project.Id, null, replacement.Id));
+        Assert.Equal(StorageErrorCode.Conflict, duplicate.Code);
+    }
+
+    [Fact]
+    public async Task V5MigrationBackfillsOnlyExactScopeSupersessionLinks()
+    {
+        await using var database = TemporaryDatabase.Create();
+        await database.Storage.InitializeAsync();
+        var project = await database.Storage.CreateProjectAsync(Project());
+        var predecessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "old", "old", null, null, "main", "0123456", ContextStatus.Active, Hash));
+        var successor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "new", "new", null, null, "main", "0123456", ContextStatus.Active, Hash[..63] + "0"));
+        var observed = DateTimeOffset.UtcNow;
+        foreach (var entry in new[] { predecessor, successor })
+        {
+            await database.Storage.CreateMcpObservationAsync(new McpObservationDraft(McpRecordKind.ContextEntry, entry.Id, 1, project.Id, null, "repository", null, observed, "D:/repo", "main", "0123456", Hash, observed, "Clean", observed));
+        }
+
+        await database.Storage.CreateMcpReferenceAsync(new McpReferenceDraft(
+            McpRecordKind.ContextEntry, successor.Id, 1, McpReferenceRole.Supersedes, 0,
+            new McpSourceReference(project.Id, null, "record", predecessor.Id, null, null, null)));
+
+        var repository = await database.Storage.CreateRepositoryAsync(Repository(project.Id));
+        var crossPredecessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "global", "global", null, null, "main", "0123456", ContextStatus.Active, Hash[..62] + "01"));
+        var crossSuccessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, repository.Id, "context", "repo", "repo", null, null, "main", "0123456", ContextStatus.Active, Hash[..62] + "02"));
+        var archivedPredecessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "archived", "archived", null, null, "main", "0123456", ContextStatus.Archived, Hash[..62] + "03"));
+        var archivedSuccessor = await database.Storage.CreateContextEntryAsync(new ContextEntryDraft(Guid.NewGuid(), project.Id, null, "context", "archived-new", "archived-new", null, null, "main", "0123456", ContextStatus.Active, Hash[..62] + "04"));
+        foreach (var (entry, scope) in new[] { (crossPredecessor, (Guid?)null), (crossSuccessor, repository.Id), (archivedPredecessor, (Guid?)null), (archivedSuccessor, (Guid?)null) })
+        {
+            await database.Storage.CreateMcpObservationAsync(new McpObservationDraft(McpRecordKind.ContextEntry, entry.Id, 1, project.Id, scope, "repository", null, observed, "D:/repo", "main", "0123456", Hash, observed, "Clean", observed));
+        }
+
+        await using (var connection = await OpenAsync(database.DatabasePath))
+        {
+            await ExecuteAsync(connection, $"""
+                INSERT INTO McpRecordReferences (RecordKind, RecordId, Revision, Role, Ordinal, ReferencedProjectId, ReferencedRepositoryId, Kind, ReferenceId)
+                VALUES (0, '{crossSuccessor.Id:D}', 1, 2, 0, '{project.Id:D}', NULL, 'record', '{crossPredecessor.Id:D}');
+                INSERT INTO McpRecordReferences (RecordKind, RecordId, Revision, Role, Ordinal, ReferencedProjectId, ReferencedRepositoryId, Kind, ReferenceId)
+                VALUES (0, '{archivedSuccessor.Id:D}', 1, 2, 0, '{project.Id:D}', NULL, 'record', '{archivedPredecessor.Id:D}');
+                UPDATE ContextEntries SET Status = 0, SupersededUtc = NULL WHERE Id = '{predecessor.Id:D}';
+                UPDATE SchemaVersion SET Version = 4, MigrationId = 'v4';
+                """);
+        }
+
+        var reopened = new SqliteContextStorage(new SqliteStorageOptions { DatabasePath = database.DatabasePath, ArtifactRoot = database.Storage.ArtifactRoot });
+        await reopened.InitializeAsync();
+        Assert.Equal(5, await reopened.GetSchemaVersionAsync());
+        Assert.Equal(ContextStatus.Superseded, (await reopened.GetContextEntryAsync(predecessor.Id))!.Status);
+        Assert.Equal(ContextStatus.Active, (await reopened.GetContextEntryAsync(crossPredecessor.Id))!.Status);
+        Assert.Equal(ContextStatus.Archived, (await reopened.GetContextEntryAsync(archivedPredecessor.Id))!.Status);
+        var supersededUtc = (await reopened.GetContextEntryAsync(predecessor.Id))!.SupersededUtc;
+        Assert.Equal(successor.CreatedUtc, supersededUtc);
+        await reopened.InitializeAsync();
+        Assert.Equal(supersededUtc, (await reopened.GetContextEntryAsync(predecessor.Id))!.SupersededUtc);
     }
 
     [Fact]
@@ -269,7 +338,7 @@ public sealed class SqliteContextStorageTests
         {
             await future.Storage.InitializeAsync();
             await using var connection = await OpenAsync(future.DatabasePath);
-            await ExecuteAsync(connection, "UPDATE SchemaVersion SET Version = 5;");
+            await ExecuteAsync(connection, "UPDATE SchemaVersion SET Version = 6;");
             var error = await Assert.ThrowsAsync<StorageException>(() => future.Storage.GetSchemaVersionAsync());
             Assert.Equal(StorageErrorCode.UnsupportedSchema, error.Code);
         }
@@ -356,7 +425,7 @@ public sealed class SqliteContextStorageTests
         await ExecuteAsync(connection, "PRAGMA foreign_keys = ON;");
         Assert.Equal(1L, await ScalarLongAsync(connection, "PRAGMA foreign_keys;"));
         Assert.Equal("ok", await ScalarStringAsync(connection, "PRAGMA integrity_check;"));
-        Assert.StartsWith("4|v4|", await ScalarStringAsync(connection, "SELECT Version || '|' || MigrationId || '|' || AppliedUtc FROM SchemaVersion;"), StringComparison.Ordinal);
+        Assert.StartsWith("5|v5|", await ScalarStringAsync(connection, "SELECT Version || '|' || MigrationId || '|' || AppliedUtc FROM SchemaVersion;"), StringComparison.Ordinal);
     }
 
     [Fact]
