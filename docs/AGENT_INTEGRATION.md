@@ -24,7 +24,7 @@ For a Git repository beneath `<approved-root>`, identify its canonical root and 
 
 ## Retrieval Policy
 
-Use `context_search`, `decision_list`, and other read surfaces only when the active task needs historical context. Startup does not load every decision, finding, handoff, validation record, log, or source file. MCP request/response limits remain bounded: 64 KiB request, 32 KiB response, and 16 KiB bootstrap response cap. The service's bounded retrieval defaults and `maxBytes` limit are authoritative.
+Use `context_search`, `decision_list`, and other read surfaces only when the active task needs historical context. Prefer the `branch` filter for branch-specific work and `findingId` for the current scoped revision of a known finding. Startup does not load every decision, finding, handoff, validation record, log, or source file. MCP request/response limits remain bounded: 64 KiB request, 32 KiB response, and 16 KiB bootstrap response cap. Configurable response budgets accept 8–32 KiB; the service's bounded retrieval defaults remain authoritative.
 
 Selective inspection of `<codex-home>\config.toml` found no explicit overrides for `project_doc_fallback_filenames`, `project_doc_max_bytes`, `project_root_markers`, `experimental_instructions_file`, or `developer_instructions`; documented Codex defaults therefore apply, with no empirical override claimed.
 

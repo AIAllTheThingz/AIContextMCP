@@ -7,7 +7,7 @@ If automatic context usage is missing, start a fresh session and check `$CODEX_H
 | Missing executable | The saved configuration names `dotnet` and the canonical Server DLL; client UI behavior is untested. | Inspect the exact configured command and DLL path before reopening Codex. |
 | Invalid working directory | The saved `cwd` is `<runtime-root>`; client UI behavior is untested. | Inspect the runtime root and the ordinary directory path. |
 | Database unavailable | `SqliteContextStorageTests` cover storage failures. | Preserve the pilot database and capture the typed storage failure; do not recreate it. |
-| Invalid repository path | `GitBoundaryTests` cover rejected repository paths. | Use an approved root and capture the path error. |
+| Invalid repository path | `GitBoundaryTests` cover rejected repository paths. | Use an approved root and capture `PathRejected`; do not confuse it with `UnbornRepository`, which means the path is a valid initialized repository with no commit yet. |
 | Malformed MCP request | `McpRuntimeIntegrationTests` cover strict wire handling. | Correct the typed request; do not assume a client UI test occurred. |
 | Server startup failure | `HostTests` cover options and `HostComposition` storage initialization. | Capture stderr and the typed startup failure before changing configuration. |
 
