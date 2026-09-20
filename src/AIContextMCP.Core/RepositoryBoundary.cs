@@ -74,8 +74,8 @@ internal sealed partial class RepositoryBoundary
             snapshot.Hold(head);
             var headText = ReadSingleLine(head, "HEAD");
             var (branch, commit) = ReadHead(gitDirectory, headText, snapshot);
-            var lineEndings = ReadEffectiveAutocrlf(configText, snapshot);
-            snapshot.Set(branch, commit, ReadOriginUrl(configText), lineEndings.Autocrlf, lineEndings.Unsupported);
+            var coreSettings = ReadEffectiveCoreSettings(configText, snapshot);
+            snapshot.Set(branch, commit, ReadOriginUrl(configText), coreSettings.Autocrlf, coreSettings.IgnoreCase, coreSettings.Unsupported);
             return snapshot;
         }
         catch
@@ -418,23 +418,24 @@ internal sealed partial class RepositoryBoundary
         return origin;
     }
 
-    private static (bool? Autocrlf, bool Unsupported) ReadEffectiveAutocrlf(string localConfig, GitMetadataSnapshot snapshot)
+    private static (bool? Autocrlf, bool? IgnoreCase, bool Unsupported) ReadEffectiveCoreSettings(string localConfig, GitMetadataSnapshot snapshot)
     {
         var system = ReadSystemGitConfig(snapshot);
         var global = ReadGlobalGitConfig(snapshot);
-        var local = ReadAutocrlf(localConfig);
+        var local = ReadCoreSettings(localConfig);
         return (
             local.Autocrlf ?? global.Autocrlf ?? system.Autocrlf,
+            local.IgnoreCase ?? global.IgnoreCase ?? system.IgnoreCase,
             local.Unsupported || global.Unsupported || system.Unsupported || HasUnsupportedConfigurationOverrides() || HasUnsupportedGlobalAttributes(snapshot));
     }
 
-    private static (bool Exists, bool? Autocrlf, bool Unsupported) ReadSystemGitConfig(GitMetadataSnapshot snapshot)
+    private static (bool Exists, bool? Autocrlf, bool? IgnoreCase, bool Unsupported) ReadSystemGitConfig(GitMetadataSnapshot snapshot)
     {
         var noSystem = Environment.GetEnvironmentVariable("GIT_CONFIG_NOSYSTEM");
         if (noSystem is not null)
         {
             var skip = ReadGitBoolean(noSystem);
-            if (skip is null) return (false, null, true);
+            if (skip is null) return (false, null, null, true);
             if (skip.Value) return default;
         }
 
@@ -443,47 +444,48 @@ internal sealed partial class RepositoryBoundary
         return ReadGitConfig(path, snapshot);
     }
 
-    private static (bool Exists, bool? Autocrlf, bool Unsupported) ReadGlobalGitConfig(GitMetadataSnapshot snapshot)
+    private static (bool Exists, bool? Autocrlf, bool? IgnoreCase, bool Unsupported) ReadGlobalGitConfig(GitMetadataSnapshot snapshot)
     {
         var configured = Environment.GetEnvironmentVariable("GIT_CONFIG_GLOBAL");
         if (configured is not null) return ReadGitConfig(configured, snapshot);
 
         var home = Environment.GetEnvironmentVariable("HOME");
         if (string.IsNullOrWhiteSpace(home)) home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrWhiteSpace(home)) return (false, null, true);
+        if (string.IsNullOrWhiteSpace(home)) return (false, null, null, true);
 
         var xdgRoot = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         var xdgPath = Path.Combine(string.IsNullOrWhiteSpace(xdgRoot) ? Path.Combine(home, ".config") : xdgRoot, "git", "config");
         var xdg = ReadGitConfig(xdgPath, snapshot);
         var legacy = ReadGitConfig(Path.Combine(home, ".gitconfig"), snapshot);
-        return (xdg.Exists || legacy.Exists, legacy.Autocrlf ?? xdg.Autocrlf, xdg.Unsupported || legacy.Unsupported);
+        return (xdg.Exists || legacy.Exists, legacy.Autocrlf ?? xdg.Autocrlf, legacy.IgnoreCase ?? xdg.IgnoreCase, xdg.Unsupported || legacy.Unsupported);
     }
 
-    private static (bool Exists, bool? Autocrlf, bool Unsupported) ReadGitConfig(string path, GitMetadataSnapshot snapshot)
+    private static (bool Exists, bool? Autocrlf, bool? IgnoreCase, bool Unsupported) ReadGitConfig(string path, GitMetadataSnapshot snapshot)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || path.StartsWith("\\\\", StringComparison.Ordinal))
             {
-                return (false, null, true);
+                return (false, null, null, true);
             }
 
             var stream = TryOpenVerifiedFile(Path.GetFullPath(path));
             if (stream is null) return default;
             snapshot.Hold(stream);
-            var setting = ReadAutocrlf(ReadBoundedUtf8(stream, "configuration"));
-            return (true, setting.Autocrlf, setting.Unsupported);
+            var setting = ReadCoreSettings(ReadBoundedUtf8(stream, "configuration"));
+            return (true, setting.Autocrlf, setting.IgnoreCase, setting.Unsupported);
         }
         catch (Exception exception) when (exception is ApplicationException or ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return (false, null, true);
+            return (false, null, null, true);
         }
     }
 
-    private static (bool? Autocrlf, bool Unsupported) ReadAutocrlf(string config)
+    private static (bool? Autocrlf, bool? IgnoreCase, bool Unsupported) ReadCoreSettings(string config)
     {
         var inCore = false;
-        bool? value = null;
+        bool? autocrlf = null;
+        bool? ignoreCase = null;
         var unsupported = false;
         foreach (var rawLine in config.Split('\n'))
         {
@@ -498,7 +500,13 @@ internal sealed partial class RepositoryBoundary
             }
             if (!inCore) continue;
             var separator = line.IndexOf('=');
-            if (separator <= 0) continue;
+            if (separator <= 0)
+            {
+                var bareKey = line.Trim();
+                if (bareKey.Equals("ignoreCase", StringComparison.OrdinalIgnoreCase)) ignoreCase = true;
+                else if (bareKey.StartsWith("ignoreCase", StringComparison.OrdinalIgnoreCase)) unsupported = true;
+                continue;
+            }
             var key = line[..separator].Trim();
             if (key.Equals("attributesfile", StringComparison.OrdinalIgnoreCase))
             {
@@ -506,18 +514,27 @@ internal sealed partial class RepositoryBoundary
                 continue;
             }
 
-            if (!key.Equals("autocrlf", StringComparison.OrdinalIgnoreCase)) continue;
-            var parsed = line[(separator + 1)..].Trim().ToLowerInvariant() switch
+            var keyValue = line[(separator + 1)..].Trim();
+            if (key.Equals("autocrlf", StringComparison.OrdinalIgnoreCase))
             {
-                "true" or "yes" or "1" => true,
-                "false" or "no" or "0" => false,
-                "input" => true,
-                _ => (bool?)null
-            };
-            if (parsed is null) unsupported = true;
-            else value = parsed;
+                var parsed = keyValue.ToLowerInvariant() switch
+                {
+                    "true" or "yes" or "1" => true,
+                    "false" or "no" or "0" => false,
+                    "input" => true,
+                    _ => (bool?)null
+                };
+                if (parsed is null) unsupported = true;
+                else autocrlf = parsed;
+            }
+            else if (key.Equals("ignorecase", StringComparison.OrdinalIgnoreCase))
+            {
+                var parsed = keyValue.Length == 0 ? false : ReadGitBoolean(keyValue);
+                if (parsed is null) unsupported = true;
+                else ignoreCase = parsed;
+            }
         }
-        return (value, unsupported);
+        return (autocrlf, ignoreCase, unsupported);
     }
 
     private static bool HasUnsupportedConfigurationOverrides()
@@ -947,9 +964,10 @@ internal sealed class GitMetadataSnapshot(string canonicalPath) : IDisposable
         }
     }
     internal bool? Autocrlf { get; private set; }
+    internal bool? IgnoreCase { get; private set; }
     internal bool HasUnsupportedWorkingTreeConfiguration { get; private set; }
-    internal void Set(string? branch, string commit, string? originUrl, bool? autocrlf, bool hasUnsupportedWorkingTreeConfiguration) =>
-        (Branch, HeadCommitSha, OriginUrl, Autocrlf, HasUnsupportedWorkingTreeConfiguration) = (branch, commit, originUrl, autocrlf, hasUnsupportedWorkingTreeConfiguration);
+    internal void Set(string? branch, string commit, string? originUrl, bool? autocrlf, bool? ignoreCase, bool hasUnsupportedWorkingTreeConfiguration) =>
+        (Branch, HeadCommitSha, OriginUrl, Autocrlf, IgnoreCase, HasUnsupportedWorkingTreeConfiguration) = (branch, commit, originUrl, autocrlf, ignoreCase, hasUnsupportedWorkingTreeConfiguration);
 
     public void Dispose()
     {

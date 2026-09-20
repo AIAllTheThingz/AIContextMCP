@@ -423,7 +423,7 @@ internal sealed partial class RepositoryBoundary
             var isDirectory = Directory.Exists(path);
             var tracked = indexed.ContainsKey(relativePath);
             if (!tracked && !indexed.Keys.Any(key => key.StartsWith(relativePath + "/", StringComparison.OrdinalIgnoreCase))
-                && IsIgnored(relativePath, isDirectory, ignores)) continue;
+                && IsIgnored(relativePath, isDirectory, ignores, snapshot.IgnoreCase is true)) continue;
             if (name.Equals(".gitignore", StringComparison.OrdinalIgnoreCase) && relativeDirectory.Length != 0)
             {
                 throw new UnsupportedWorkingTreeException();
@@ -766,7 +766,9 @@ internal sealed partial class RepositoryBoundary
         if (file is null) return [];
         snapshot.Hold(file);
         var rules = new List<string>();
-        foreach (var line in new UTF8Encoding(false, true).GetString(ReadBoundedBytes(file, StorageLimits.Content)).Split('\n'))
+        var text = new UTF8Encoding(false, true).GetString(ReadBoundedBytes(file, StorageLimits.Content));
+        if (text.StartsWith('\uFEFF')) text = text[1..];
+        foreach (var line in text.Split('\n'))
         {
             var rule = line.EndsWith('\r') ? line[..^1] : line;
             if (rule.Length == 0 || rule.StartsWith('#')) continue;
@@ -782,7 +784,7 @@ internal sealed partial class RepositoryBoundary
         return rules;
     }
 
-    private static bool IsIgnored(string path, bool directory, IReadOnlyList<string> rules)
+    private static bool IsIgnored(string path, bool directory, IReadOnlyList<string> rules, bool ignoreCase)
     {
         // Check ancestors too when an ignored directory contains a force-added tracked file.
         var segments = path.Split('/');
@@ -795,7 +797,7 @@ internal sealed partial class RepositoryBoundary
                 var pattern = rule.Trim('/');
                 if (rule.StartsWith('/') && !pattern.Contains('/') && count != 1) continue;
                 var value = rule.StartsWith('/') || pattern.Contains('/') ? candidate : segments[count - 1];
-                if (FileSystemName.MatchesSimpleExpression(pattern, value, ignoreCase: false)) return true;
+                if (FileSystemName.MatchesSimpleExpression(pattern, value, ignoreCase)) return true;
             }
         }
         return false;
