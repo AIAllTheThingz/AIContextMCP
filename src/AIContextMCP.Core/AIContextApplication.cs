@@ -381,7 +381,7 @@ public sealed class AIContextApplication : IAIContextApplication
         {
             return await ResolveWriteScopeAsync(projectId, repositoryId, cancellationToken);
         }
-        catch (ApplicationException exception) when (exception.Code is ApplicationErrorCode.PathRejected or ApplicationErrorCode.RepositoryOutsideApprovedRoot or ApplicationErrorCode.RepositoryNotFound or ApplicationErrorCode.NotGitRepository or ApplicationErrorCode.GitUnavailable or ApplicationErrorCode.GitTimeout or ApplicationErrorCode.GitCommandFailed)
+        catch (ApplicationException exception) when (exception.Code is ApplicationErrorCode.PathRejected or ApplicationErrorCode.RepositoryOutsideApprovedRoot or ApplicationErrorCode.RepositoryNotFound or ApplicationErrorCode.NotGitRepository or ApplicationErrorCode.UnbornRepository or ApplicationErrorCode.GitUnavailable or ApplicationErrorCode.GitTimeout or ApplicationErrorCode.GitCommandFailed)
         {
             return null;
         }

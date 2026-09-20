@@ -327,7 +327,7 @@ internal sealed class McpToolAdapter
 
             return git;
         }
-        catch (AIContextMCP.Core.ApplicationException exception) when (exception.Code is ApplicationErrorCode.GitUnavailable or ApplicationErrorCode.GitTimeout or ApplicationErrorCode.GitCommandFailed or ApplicationErrorCode.NotGitRepository)
+        catch (AIContextMCP.Core.ApplicationException exception) when (exception.Code is ApplicationErrorCode.GitUnavailable or ApplicationErrorCode.GitTimeout or ApplicationErrorCode.GitCommandFailed or ApplicationErrorCode.NotGitRepository or ApplicationErrorCode.UnbornRepository)
         {
             return null;
         }

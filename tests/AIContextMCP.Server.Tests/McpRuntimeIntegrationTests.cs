@@ -323,6 +323,13 @@ public sealed class McpRuntimeIntegrationTests
                     ("maxResults", 100)), cancellationToken));
                 Assert.Equal("Stale", Entry(branchChanged, branchEntryId).GetProperty("freshness").GetString());
                 await AssertContextCursorPaginationAsync(second.Client, projectId, repositoryId, branchChangedSnapshot, cancellationToken);
+                await fixture.GitAsync(cancellationToken, "update-ref", "-d", "HEAD");
+                var unbornSearch = Success(await CallAsync(second.Client, "context.search", Arguments(
+                    ("projectId", projectId), ("repositoryId", repositoryId), ("query", "Current branch observation.")), cancellationToken));
+                Assert.Equal("Unknown", Entry(unbornSearch, branchEntryId).GetProperty("freshness").GetString());
+                Assert.Contains(unbornSearch.GetProperty("warnings").EnumerateArray(), warning => warning.GetString() == "Repository state is unavailable; freshness is unknown.");
+                Assert.Equal("UnbornRepository", await ErrorCodeAsync(second.Client, "project.bootstrap", Arguments(
+                    ("repositoryPath", fixture.RepositoryPath)), cancellationToken));
             }
             finally
             {
