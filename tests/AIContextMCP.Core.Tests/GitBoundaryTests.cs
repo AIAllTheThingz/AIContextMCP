@@ -90,6 +90,27 @@ public sealed class GitBoundaryTests
     }
 
     [Fact]
+    public async Task Inspector_rejects_a_dangling_reparse_point_for_loose_refs()
+    {
+        using var fixture = new ControlledGitFixture();
+        var heads = Path.Combine(fixture.RepositoryPath, ".git", "refs", "heads");
+        var target = Path.Combine(Path.GetDirectoryName(fixture.RepositoryPath)!, "dangling-heads-target");
+        Directory.Delete(heads, recursive: true);
+        Directory.CreateDirectory(target);
+        CreateJunction(heads, target);
+        Directory.Delete(target);
+        try
+        {
+            var error = await Assert.ThrowsAsync<ApplicationException>(() => new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None));
+            Assert.Equal(ApplicationErrorCode.PathRejected, error.Code);
+        }
+        finally
+        {
+            try { Directory.Delete(heads); } catch (DirectoryNotFoundException) { }
+        }
+    }
+
+    [Fact]
     public async Task Inspector_rejects_sensitive_parent_directory_even_with_source_extension()
     {
         using var fixture = new ControlledGitFixture();

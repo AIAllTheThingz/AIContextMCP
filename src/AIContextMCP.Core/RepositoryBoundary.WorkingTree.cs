@@ -259,13 +259,13 @@ internal sealed partial class RepositoryBoundary
         }
 
         var objects = Path.Combine(snapshot.GitDirectory, "objects");
-        if (!TryHoldWorkingTreeDirectory(snapshot, objects))
+        if (!TryHoldDirectory(snapshot, objects))
         {
             throw new UnsupportedWorkingTreeException();
         }
 
         var shard = Path.Combine(objects, objectId[..2]);
-        if (!TryHoldWorkingTreeDirectory(snapshot, shard))
+        if (!TryHoldDirectory(snapshot, shard))
         {
             throw new UnsupportedWorkingTreeException();
         }
@@ -487,7 +487,7 @@ internal sealed partial class RepositoryBoundary
         HoldDirectory(snapshot, path);
     }
 
-    private static bool TryHoldWorkingTreeDirectory(GitMetadataSnapshot snapshot, string path)
+    private static bool TryHoldDirectory(GitMetadataSnapshot snapshot, string path)
     {
         if (snapshot.HasDirectory(path))
         {

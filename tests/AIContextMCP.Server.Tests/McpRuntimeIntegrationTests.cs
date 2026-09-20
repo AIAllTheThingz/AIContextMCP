@@ -209,6 +209,10 @@ public sealed class McpRuntimeIntegrationTests
             Assert.Equal(longFindingDescription[..4096], detail.GetProperty("description").GetString());
             Assert.True(findingDetail.GetProperty("truncated").GetBoolean());
             Assert.Contains(findingDetail.GetProperty("warnings").EnumerateArray(), warning => warning.GetString() == "Finding detail fields were truncated for the response budget.");
+            var minimumBudgetFindingDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("findingId", findingId), ("maxBytes", McpJson.MinimumResponseBytes)), cancellationToken));
+            Assert.True(minimumBudgetFindingDetail.GetProperty("truncated").GetBoolean());
+            Assert.Single(minimumBudgetFindingDetail.GetProperty("findings").EnumerateArray());
             var supersedingTest = Success(await CallAsync(first.Client, "test.record", Arguments(
                 ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
                 ("name", "Replacement runtime test"), ("status", "Passed"), ("passed", 1), ("failed", 0), ("skipped", 0),

@@ -103,23 +103,50 @@ internal sealed class McpToolAdapter
         {
             var finding = await _storage.GetFindingAsync(McpJson.RequiredId(request.FindingId, "finding id"), cancellationToken)
                 ?? throw new McpInputException("NotFound", "Finding was not found.");
-            if (finding.ProjectId != scope.Project.Id || (scope.Repository is null ? finding.RepositoryId is not null : finding.RepositoryId is not null && finding.RepositoryId != scope.Repository.Id))
+            if (finding.ProjectId != scope.Project.Id || scope.Repository is not null && finding.RepositoryId != scope.Repository.Id)
             {
                 throw new McpInputException("CrossProjectReference", "Finding is outside the requested scope.");
             }
             var findingGit = await ObserveForReadAsync(scope, cancellationToken);
             var observation = await _storage.GetMcpObservationAsync(McpRecordKind.Finding, finding.Id, finding.Revision, cancellationToken);
-            var truncated = finding.Title.Length > 256
-                || finding.Description.Length > 4096
-                || finding.Remediation?.Length > 2048
-                || finding.ResolutionEvidence?.Length > 2048;
-            var detail = new McpFindingItem(finding.Id.ToString("D"), finding.Revision, Bound(finding.Title, 256)!, finding.Severity, finding.Status,
-                Bound(finding.Description, 4096)!, Bound(finding.Remediation, 2048), Bound(finding.ResolutionEvidence, 2048), finding.Branch, finding.CommitSha,
-                Freshness(finding.Branch, finding.CommitSha, observation, findingGit), observation?.SourceKind);
-            var warnings = truncated
-                ? FreshnessWarnings(findingGit).Append("Finding detail fields were truncated for the response budget.").ToArray()
-                : FreshnessWarnings(findingGit);
-            return Success(new SearchResult([], null, truncated, warnings, [detail]), correlationId, request.MaxBytes);
+            var freshness = Freshness(finding.Branch, finding.CommitSha, observation, findingGit);
+            var freshnessWarnings = FreshnessWarnings(findingGit);
+            SearchResult BuildFindingResult(int descriptionLimit)
+            {
+                var titleLimit = Math.Max(1, 256 * descriptionLimit / 4096);
+                var optionalLimit = 2048 * descriptionLimit / 4096;
+                var truncated = finding.Title.Length > titleLimit
+                    || finding.Description.Length > descriptionLimit
+                    || finding.Remediation?.Length > optionalLimit
+                    || finding.ResolutionEvidence?.Length > optionalLimit;
+                var detail = new McpFindingItem(finding.Id.ToString("D"), finding.Revision, Bound(finding.Title, titleLimit)!, finding.Severity, finding.Status,
+                    Bound(finding.Description, Math.Max(1, descriptionLimit))!, Bound(finding.Remediation, optionalLimit), Bound(finding.ResolutionEvidence, optionalLimit),
+                    finding.Branch, finding.CommitSha, freshness, observation?.SourceKind);
+                var warnings = truncated
+                    ? freshnessWarnings.Append("Finding detail fields were truncated for the response budget.").ToArray()
+                    : freshnessWarnings;
+                return new SearchResult([], null, truncated, warnings, [detail]);
+            }
+
+            var low = 0;
+            var high = 4096;
+            var findingResult = BuildFindingResult(0);
+            while (low <= high)
+            {
+                var candidateLimit = low + (high - low) / 2;
+                var candidate = BuildFindingResult(candidateLimit);
+                if (ResponseFits(candidate, correlationId, request.MaxBytes))
+                {
+                    findingResult = candidate;
+                    low = candidateLimit + 1;
+                }
+                else
+                {
+                    high = candidateLimit - 1;
+                }
+            }
+
+            return Success(findingResult, correlationId, request.MaxBytes);
         }
         var filterHash = FilterHash(new
         {
@@ -355,10 +382,18 @@ internal sealed class McpToolAdapter
     private static string SuccessJson<T>(T value, string correlationId, int limit)
     {
         var json = McpJson.Serialize(new McpEnvelope(true, McpJson.ToElement(value), null, 1, correlationId));
+        if (!ResponseFits(json, limit)) throw new McpInputException("LimitExceeded", "Response exceeds its limit.");
+        return json;
+    }
+
+    private static bool ResponseFits<T>(T value, string correlationId, int limit) =>
+        ResponseFits(McpJson.Serialize(new McpEnvelope(true, McpJson.ToElement(value), null, 1, correlationId)), limit);
+
+    private static bool ResponseFits(string json, int limit)
+    {
         // MCP clients receive this envelope in both structuredContent and an escaped text block.
         var textBytes = System.Text.Encoding.UTF8.GetByteCount(McpJson.Serialize(json));
-        if (System.Text.Encoding.UTF8.GetByteCount(json) + textBytes > limit - ProtocolResultReserveBytes) throw new McpInputException("LimitExceeded", "Response exceeds its limit.");
-        return json;
+        return System.Text.Encoding.UTF8.GetByteCount(json) + textBytes <= limit - ProtocolResultReserveBytes;
     }
 
     private static (McpInvocationResult Result, string Code) Failure(Exception exception, string correlationId)

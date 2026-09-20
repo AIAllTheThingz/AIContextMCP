@@ -229,24 +229,21 @@ internal sealed partial class RepositoryBoundary
         var branch = ParseBranch(head[prefix.Length..]);
         var segments = branch.Split('/');
         var referenceDirectory = Path.Combine(gitDirectory, "refs", "heads");
-        var looseAvailable = Directory.Exists(referenceDirectory);
-        if (looseAvailable) HoldRelativeDirectories(gitDirectory, ["refs", "heads"], snapshot);
+        var looseAvailable = TryHoldDirectory(snapshot, referenceDirectory);
         foreach (var segment in segments[..^1])
         {
             referenceDirectory = Path.Combine(referenceDirectory, segment);
-            if (!Directory.Exists(referenceDirectory))
+            if (!TryHoldDirectory(snapshot, referenceDirectory))
             {
                 looseAvailable = false;
                 break;
             }
-
-            HoldDirectory(snapshot, referenceDirectory);
         }
 
         var referencePath = Path.Combine(referenceDirectory, segments[^1]);
-        if (looseAvailable && File.Exists(referencePath))
+        var reference = looseAvailable ? TryOpenVerifiedFile(referencePath) : null;
+        if (reference is not null)
         {
-            var reference = OpenVerifiedFile(referencePath);
             snapshot.Hold(reference);
             var commit = ReadSingleLine(reference, "branch reference");
             if (!IsCommitSha(commit))
@@ -258,9 +255,9 @@ internal sealed partial class RepositoryBoundary
         }
 
         var packedPath = Path.Combine(gitDirectory, "packed-refs");
-        if (File.Exists(packedPath))
+        var packed = TryOpenVerifiedFile(packedPath);
+        if (packed is not null)
         {
-            var packed = OpenVerifiedFile(packedPath);
             snapshot.Hold(packed);
             var commit = ReadPackedBranch(packed, branch);
             if (commit is not null) return (branch, commit);
