@@ -191,6 +191,7 @@ public sealed class McpRuntimeIntegrationTests
                 ("source", Source()),
                 ("runSnapshot", currentSnapshot),
                 ("observedUtc", DateTimeOffset.UtcNow)), cancellationToken)).GetProperty("testRunId").GetString()!;
+            var longFindingDescription = new string('x', 4097);
             var findingId = Success(await CallAsync(first.Client, "finding.record", Arguments(
                 ("requestId", RequestId()),
                 ("projectId", projectId),
@@ -198,14 +199,16 @@ public sealed class McpRuntimeIntegrationTests
                 ("title", "Persisted runtime finding"),
                 ("severity", "Info"),
                 ("status", "Open"),
-                ("description", "Persistence retrieval marker."),
+                ("description", longFindingDescription),
                 ("source", Source()),
                 ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("findingId").GetString()!;
             var findingDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
                 ("projectId", projectId), ("repositoryId", repositoryId), ("findingId", findingId)), cancellationToken));
             var detail = Assert.Single(findingDetail.GetProperty("findings").EnumerateArray());
             Assert.Equal(findingId, detail.GetProperty("findingId").GetString());
-            Assert.Equal("Persistence retrieval marker.", detail.GetProperty("description").GetString());
+            Assert.Equal(longFindingDescription[..4096], detail.GetProperty("description").GetString());
+            Assert.True(findingDetail.GetProperty("truncated").GetBoolean());
+            Assert.Contains(findingDetail.GetProperty("warnings").EnumerateArray(), warning => warning.GetString() == "Finding detail fields were truncated for the response budget.");
             var supersedingTest = Success(await CallAsync(first.Client, "test.record", Arguments(
                 ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
                 ("name", "Replacement runtime test"), ("status", "Passed"), ("passed", 1), ("failed", 0), ("skipped", 0),
@@ -226,6 +229,7 @@ public sealed class McpRuntimeIntegrationTests
             var revisedDetailItem = Assert.Single(revisedDetail.GetProperty("findings").EnumerateArray());
             Assert.Equal(2, revisedDetailItem.GetProperty("revision").GetInt32());
             Assert.Equal("revised-test", revisedDetailItem.GetProperty("provenance").GetString());
+            Assert.False(revisedDetail.GetProperty("truncated").GetBoolean());
             var storage = new SqliteContextStorage(new SqliteStorageOptions { DatabasePath = fixture.DatabasePath, ArtifactRoot = Path.Combine(Path.GetDirectoryName(fixture.DatabasePath)!, "artifacts") });
             {
                 await storage.InitializeAsync(cancellationToken);

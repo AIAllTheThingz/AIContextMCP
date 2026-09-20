@@ -15,6 +15,7 @@ internal sealed partial class RepositoryBoundary
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const int GitMetadataBytes = 64 * 1024;
+    private const int PackedRefsBytes = 16 * 1024 * 1024;
     private readonly string[] _roots;
 
     public RepositoryBoundary(IEnumerable<string> approvedRoots)
@@ -271,7 +272,7 @@ internal sealed partial class RepositoryBoundary
     private static string? ReadPackedBranch(FileStream packed, string branch)
     {
         var target = $"refs/heads/{branch}";
-        foreach (var line in ReadBoundedUtf8(packed, "packed references").Split('\n'))
+        foreach (var line in ReadBoundedUtf8(packed, "packed references", PackedRefsBytes).Split('\n'))
         {
             var value = line.TrimEnd('\r');
             if (value.Length == 0 || value[0] is '#' or '^') continue;
@@ -337,12 +338,12 @@ internal sealed partial class RepositoryBoundary
         return value;
     }
 
-    private static string ReadBoundedUtf8(FileStream stream, string name)
+    private static string ReadBoundedUtf8(FileStream stream, string name, int maxBytes = GitMetadataBytes)
     {
         try
         {
             var length = stream.Length;
-            if (length > GitMetadataBytes)
+            if (length > maxBytes)
             {
                 throw new ApplicationException(ApplicationErrorCode.ContentTooLarge, $"Git {name} exceeds the supported size.");
             }

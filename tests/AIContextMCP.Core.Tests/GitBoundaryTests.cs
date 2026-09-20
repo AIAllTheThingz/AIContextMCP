@@ -71,6 +71,25 @@ public sealed class GitBoundaryTests
     }
 
     [Fact]
+    public async Task Inspector_reads_a_packed_branch_ref_after_64_kib()
+    {
+        using var fixture = new ControlledGitFixture();
+        var commit = fixture.Run("rev-parse", "HEAD");
+        var branch = fixture.Run("branch", "--show-current");
+        var packed = new StringBuilder("# pack-refs with: peeled fully-peeled\n");
+        for (var index = 0; index < 1500; index++) packed.Append(commit).Append(" refs/tags/test-").Append(index.ToString("D4")).Append('\n');
+        packed.Append(commit).Append(" refs/heads/").Append(branch).Append('\n');
+        var packedPath = Path.Combine(fixture.RepositoryPath, ".git", "packed-refs");
+        File.WriteAllText(packedPath, packed.ToString(), new UTF8Encoding(false));
+        Assert.True(new FileInfo(packedPath).Length > 64 * 1024);
+        Directory.Delete(Path.Combine(fixture.RepositoryPath, ".git", "refs", "heads"), recursive: true);
+
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+
+        Assert.Equal(commit, state.HeadCommitSha);
+    }
+
+    [Fact]
     public async Task Inspector_rejects_sensitive_parent_directory_even_with_source_extension()
     {
         using var fixture = new ControlledGitFixture();

@@ -109,10 +109,17 @@ internal sealed class McpToolAdapter
             }
             var findingGit = await ObserveForReadAsync(scope, cancellationToken);
             var observation = await _storage.GetMcpObservationAsync(McpRecordKind.Finding, finding.Id, finding.Revision, cancellationToken);
+            var truncated = finding.Title.Length > 256
+                || finding.Description.Length > 4096
+                || finding.Remediation?.Length > 2048
+                || finding.ResolutionEvidence?.Length > 2048;
             var detail = new McpFindingItem(finding.Id.ToString("D"), finding.Revision, Bound(finding.Title, 256)!, finding.Severity, finding.Status,
                 Bound(finding.Description, 4096)!, Bound(finding.Remediation, 2048), Bound(finding.ResolutionEvidence, 2048), finding.Branch, finding.CommitSha,
                 Freshness(finding.Branch, finding.CommitSha, observation, findingGit), observation?.SourceKind);
-            return Success(new SearchResult([], null, false, [.. FreshnessWarnings(findingGit), "Finding detail fields are bounded for the response budget."], [detail]), correlationId, request.MaxBytes);
+            var warnings = truncated
+                ? FreshnessWarnings(findingGit).Append("Finding detail fields were truncated for the response budget.").ToArray()
+                : FreshnessWarnings(findingGit);
+            return Success(new SearchResult([], null, truncated, warnings, [detail]), correlationId, request.MaxBytes);
         }
         var filterHash = FilterHash(new
         {
