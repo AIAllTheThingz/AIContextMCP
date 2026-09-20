@@ -83,6 +83,7 @@ public sealed class McpContractTests
         Assert.False(AllowsNull(search.GetProperty("maxResults")));
         Assert.Equal(20, search.GetProperty("maxResults").GetProperty("default").GetInt32());
         Assert.Equal(16 * 1024, search.GetProperty("maxBytes").GetProperty("default").GetInt32());
+        Assert.Equal(8 * 1024, search.GetProperty("maxBytes").GetProperty("minimum").GetInt32());
 
         var decisions = Assert.Single(tools, tool => tool.Name == "decision.list").InputSchema.GetProperty("properties");
         Assert.True(AllowsNull(decisions.GetProperty("statuses")));
@@ -109,6 +110,10 @@ public sealed class McpContractTests
         Assert.Null(search.RepositoryId);
         Assert.Equal(20, search.MaxResults);
         Assert.Equal(16 * 1024, search.MaxBytes);
+        Assert.Equal("f", McpJson.Deserialize<ContextSearch>("""{"projectId":"p","findingId":"f"}""").FindingId);
+
+        var test = McpJson.Deserialize<TestRecord>("""{"requestId":"r","projectId":"p","name":"n","status":"Passed","passed":1,"failed":0,"skipped":0,"summary":"s","commandData":"c","source":{"kind":"test","observedUtc":"2026-01-01T00:00:00Z"},"runSnapshot":{"snapshotToken":"token","canonicalRoot":"root","workingTreeFingerprint":null,"observedUtc":"2026-01-01T00:00:00Z","completeness":"Clean"},"observedUtc":"2026-01-01T00:00:00Z","supersedesId":"old"}""");
+        Assert.Equal("old", test.SupersedesId);
 
         var decisions = McpJson.Deserialize<DecisionList>("""{"projectId":"p","statuses":null}""");
         Assert.Null(decisions.Statuses);

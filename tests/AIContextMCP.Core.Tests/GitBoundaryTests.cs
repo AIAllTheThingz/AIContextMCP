@@ -45,6 +45,59 @@ public sealed class GitBoundaryTests
         Assert.Throws<ApplicationException>(() => boundary.PreflightGitRepository(plain));
     }
 
+    [Fact]
+    public async Task Inspector_distinguishes_an_unborn_repository_from_a_rejected_path()
+    {
+        using var fixture = new ControlledGitFixture();
+        var unborn = Path.Combine(Path.GetDirectoryName(fixture.RepositoryPath)!, "unborn");
+        Directory.CreateDirectory(unborn);
+        fixture.Run("-C", unborn, "init");
+
+        var error = await Assert.ThrowsAsync<ApplicationException>(() => new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(unborn, CancellationToken.None));
+
+        Assert.Equal(ApplicationErrorCode.UnbornRepository, error.Code);
+    }
+
+    [Fact]
+    public async Task Inspector_reads_a_packed_branch_ref()
+    {
+        using var fixture = new ControlledGitFixture();
+        fixture.Run("pack-refs", "--all", "--prune");
+        Directory.Delete(Path.Combine(fixture.RepositoryPath, ".git", "refs", "heads"), recursive: true);
+
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+
+        Assert.Equal(fixture.Run("rev-parse", "HEAD"), state.HeadCommitSha);
+    }
+
+    [Fact]
+    public async Task Inspector_rejects_sensitive_parent_directory_even_with_source_extension()
+    {
+        using var fixture = new ControlledGitFixture();
+        var path = Path.Combine(fixture.RepositoryPath, "secrets.cs", "config.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "safe-looking");
+
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+
+        Assert.Equal(WorkingTreeState.Unknown, state.WorkingTree);
+    }
+
+    [Theory]
+    [InlineData("CredentialProvider.cs")]
+    [InlineData("CredentialProvider.sh")]
+    public async Task Inspector_allows_credential_handling_source_files(string fileName)
+    {
+        using var fixture = new ControlledGitFixture();
+        var path = Path.Combine(fixture.RepositoryPath, fileName);
+        File.WriteAllText(path, "internal sealed class CredentialProvider { }");
+
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+
+        Assert.Equal(WorkingTreeState.Dirty, state.WorkingTree);
+        Assert.NotNull(state.WorkingTreeFingerprint);
+    }
+
     [Theory]
     [InlineData("[include]\n\tpath = D:/outside\n", "D:/outside")]
     [InlineData("[include]\npath = D:/out\\\nside\n", "D:/outside")]

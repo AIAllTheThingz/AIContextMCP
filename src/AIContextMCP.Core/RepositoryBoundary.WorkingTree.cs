@@ -716,21 +716,34 @@ internal sealed partial class RepositoryBoundary
                 && baseName[3] is >= '1' and <= '9');
     }
 
-    private static bool IsSensitivePath(string path) =>
-        path.Split('/').Any(segment =>
-            segment.StartsWith(".env", StringComparison.OrdinalIgnoreCase)
-            || segment.Contains("secret", StringComparison.OrdinalIgnoreCase)
+    private static bool IsSensitivePath(string path)
+    {
+        var segments = path.Split('/');
+        for (var index = 0; index < segments.Length; index++)
+        {
+            if (IsSensitiveSegment(segments[index], index == segments.Length - 1)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsSensitiveSegment(string segment, bool leaf) =>
+        segment.StartsWith(".env", StringComparison.OrdinalIgnoreCase)
+        || ((!leaf || !IsSourceFile(segment)) && (segment.Contains("secret", StringComparison.OrdinalIgnoreCase)
             || segment.Contains("credential", StringComparison.OrdinalIgnoreCase)
             || segment.Contains("password", StringComparison.OrdinalIgnoreCase)
-            || segment.Contains("token", StringComparison.OrdinalIgnoreCase)
-            || segment.Equals("id_rsa", StringComparison.OrdinalIgnoreCase)
-            || segment.Equals("id_dsa", StringComparison.OrdinalIgnoreCase)
-            || segment.Equals("id_ecdsa", StringComparison.OrdinalIgnoreCase)
-            || segment.Equals("id_ed25519", StringComparison.OrdinalIgnoreCase)
-            || segment.EndsWith(".pem", StringComparison.OrdinalIgnoreCase)
-            || segment.EndsWith(".key", StringComparison.OrdinalIgnoreCase)
-            || segment.EndsWith(".pfx", StringComparison.OrdinalIgnoreCase)
-            || segment.EndsWith(".p12", StringComparison.OrdinalIgnoreCase));
+            || segment.Contains("token", StringComparison.OrdinalIgnoreCase)))
+        || segment.Equals("id_rsa", StringComparison.OrdinalIgnoreCase)
+        || segment.Equals("id_dsa", StringComparison.OrdinalIgnoreCase)
+        || segment.Equals("id_ecdsa", StringComparison.OrdinalIgnoreCase)
+        || segment.Equals("id_ed25519", StringComparison.OrdinalIgnoreCase)
+        || segment.EndsWith(".pem", StringComparison.OrdinalIgnoreCase)
+        || segment.EndsWith(".key", StringComparison.OrdinalIgnoreCase)
+        || segment.EndsWith(".pfx", StringComparison.OrdinalIgnoreCase)
+        || segment.EndsWith(".p12", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSourceFile(string path) => Path.GetExtension(path).ToLowerInvariant() is
+        ".c" or ".cc" or ".cpp" or ".cs" or ".fs" or ".go" or ".h" or ".hpp" or ".java" or ".js" or ".jsx" or ".kt" or ".php" or ".ps1" or ".psm1" or ".py" or ".rb" or ".rs" or ".sql" or ".swift" or ".ts" or ".tsx" or ".vb" or ".sh" or ".bash" or ".zsh" or ".bat" or ".cmd";
 
     private sealed class UnsupportedWorkingTreeException : Exception;
     private sealed class TreeNode

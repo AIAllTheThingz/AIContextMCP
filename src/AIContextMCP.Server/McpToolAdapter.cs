@@ -99,6 +99,21 @@ internal sealed class McpToolAdapter
     {
         Validate(request);
         var scope = await RequireScopeAsync(request.ProjectId, request.RepositoryId, cancellationToken);
+        if (request.FindingId is not null)
+        {
+            var finding = await _storage.GetFindingAsync(McpJson.RequiredId(request.FindingId, "finding id"), cancellationToken)
+                ?? throw new McpInputException("NotFound", "Finding was not found.");
+            if (finding.ProjectId != scope.Project.Id || (scope.Repository is null ? finding.RepositoryId is not null : finding.RepositoryId is not null && finding.RepositoryId != scope.Repository.Id))
+            {
+                throw new McpInputException("CrossProjectReference", "Finding is outside the requested scope.");
+            }
+            var findingGit = await ObserveForReadAsync(scope, cancellationToken);
+            var observation = await _storage.GetMcpObservationAsync(McpRecordKind.Finding, finding.Id, finding.Revision, cancellationToken);
+            var detail = new McpFindingItem(finding.Id.ToString("D"), finding.Revision, Bound(finding.Title, 256)!, finding.Severity, finding.Status,
+                Bound(finding.Description, 4096)!, Bound(finding.Remediation, 2048), Bound(finding.ResolutionEvidence, 2048), finding.Branch, finding.CommitSha,
+                Freshness(finding.Branch, finding.CommitSha, observation, findingGit), observation?.SourceKind);
+            return Success(new SearchResult([], null, false, [.. FreshnessWarnings(findingGit), "Finding detail fields are bounded for the response budget."], [detail]), correlationId, request.MaxBytes);
+        }
         var filterHash = FilterHash(new
         {
             scope.Project.Id,
@@ -108,7 +123,8 @@ internal sealed class McpToolAdapter
             request.Commit,
             request.Status,
             request.RecencySinceUtc,
-            request.Query
+            request.Query,
+            request.FindingId
         });
         var cursor = request.Cursor is null ? ((DateTimeOffset? ObservedUtc, Guid? RecordId))(null, null) : ReadCursor(request.Cursor, scope, filterHash);
         var rows = await _storage.ListMcpContextEntriesAsync(new McpContextPageQuery(
@@ -129,7 +145,7 @@ internal sealed class McpToolAdapter
             : null;
         var git = await ObserveForReadAsync(scope, cancellationToken);
         var entries = await Task.WhenAll(page.Select(row => ToContextItemAsync(row, git, cancellationToken)));
-        var result = new SearchResult(entries, nextCursor, nextCursor is not null, FreshnessWarnings(git));
+        var result = new SearchResult(entries, nextCursor, nextCursor is not null, FreshnessWarnings(git), []);
         return Success(result, correlationId, request.MaxBytes);
     }
 
@@ -298,10 +314,10 @@ internal sealed class McpToolAdapter
             row.Decision.ResolutionEvidence, row.ObservedUtc, Freshness(row.Decision.Branch, row.Decision.OriginatingCommitSha, metadata.Observation, git), metadata.Source, metadata.References);
     }
 
-    private static async Task<(McpObservationRecord? Observation, Source? Source, IReadOnlyList<Reference> References)> ReadMetadataAsync(IAIContextStorage storage, McpRecordKind kind, Guid id, CancellationToken cancellationToken)
+    private static async Task<(McpObservationRecord? Observation, Source? Source, IReadOnlyList<Reference> References)> ReadMetadataAsync(IAIContextStorage storage, McpRecordKind kind, Guid id, CancellationToken cancellationToken, int revision = 1)
     {
-        var observation = await storage.GetMcpObservationAsync(kind, id, cancellationToken: cancellationToken);
-        var references = await storage.ListMcpReferencesAsync(kind, id, cancellationToken: cancellationToken);
+        var observation = await storage.GetMcpObservationAsync(kind, id, revision, cancellationToken);
+        var references = await storage.ListMcpReferencesAsync(kind, id, revision, cancellationToken);
         return (
             observation,
             observation is null ? null : new Source(observation.SourceKind, observation.SourceObservedUtc, ToReference(observation.SourceReference)),
@@ -355,6 +371,7 @@ internal sealed class McpToolAdapter
     private static (string Code, string Message, bool Retryable) Map(AIContextMCP.Core.ApplicationException exception) => exception.Code switch
     {
         ApplicationErrorCode.PathRejected or ApplicationErrorCode.RepositoryOutsideApprovedRoot or ApplicationErrorCode.RepositoryNotFound => ("PathRejected", "Repository path was rejected.", false),
+        ApplicationErrorCode.UnbornRepository => ("UnbornRepository", "The repository has no commit yet.", false),
         ApplicationErrorCode.GitUnavailable or ApplicationErrorCode.GitTimeout or ApplicationErrorCode.GitCommandFailed => ("GitUnavailable", "Repository observation is unavailable.", true),
         ApplicationErrorCode.StaleState => ("StaleState", "Repository state is stale.", false),
         ApplicationErrorCode.ProjectIdentityConflict or ApplicationErrorCode.DuplicateRecord or ApplicationErrorCode.Conflict or ApplicationErrorCode.InvalidTransition => ("Conflict", "The requested state conflicts with stored state.", false),
@@ -402,6 +419,11 @@ internal sealed class McpToolAdapter
         McpJson.Limit(request.MaxResults, "max results");
         McpJson.MaximumBytes(request.MaxBytes);
         McpJson.Optional(request.Cursor, McpJson.Cursor, "cursor");
+        McpJson.OptionalId(request.FindingId, "finding id");
+        if (request.FindingId is not null && (request.Branch is not null || request.Category is not null || request.Commit is not null || request.Status is not null || request.RecencySinceUtc is not null || request.Query is not null || request.Cursor is not null))
+        {
+            throw new McpInputException("InvalidInput", "findingId cannot be combined with search filters.");
+        }
     }
 
     private static void Validate(DecisionList request)
@@ -691,6 +713,8 @@ internal sealed class McpToolAdapter
         }
     }
 
+    private static string? Bound(string? value, int length) => value is null || value.Length <= length ? value : value[..length];
+
     private static void EnsureSafeExternalUri(string? value)
     {
         McpJson.Required(value, McpJson.Identifier, "external URI");
@@ -871,6 +895,7 @@ internal sealed class McpToolAdapter
             McpJson.OptionalText(request.Evidence, StorageLimits.Content, "evidence");
             McpJson.Optional(request.ArtifactRef, McpJson.Identifier, "artifact reference");
             McpJson.Optional(request.ExpectedSnapshotToken, McpJson.Cursor, "expected snapshot token");
+            McpJson.OptionalId(request.SupersedesId, "supersedes id");
             McpJson.SourceShape(request.Source);
             McpJson.SnapshotShape(request.RunSnapshot, "run snapshot");
             McpJson.Timestamp(request.ObservedUtc, "observed time");
@@ -880,6 +905,13 @@ internal sealed class McpToolAdapter
             {
                 adapter.VerifyObservedSnapshot(scope, request.RunSnapshot);
                 if (request.ExpectedSnapshotToken is not null) await adapter.RequireCurrentSnapshotAsync(storage, scope, request.RunSnapshot, request.ExpectedSnapshotToken, token);
+                TestRunRecord? predecessor = null;
+                if (request.SupersedesId is not null)
+                {
+                    predecessor = await storage.GetTestRunAsync(McpJson.RequiredId(request.SupersedesId, "supersedes id"), token)
+                        ?? throw new McpInputException("NotFound", "Superseded test run was not found.");
+                    EnsureExactScope(scope, predecessor.ProjectId, predecessor.RepositoryId);
+                }
                 ArtifactRecord? artifact = null;
                 Reference? artifactReference = null;
                 if (request.ArtifactRef is not null)
@@ -899,7 +931,12 @@ internal sealed class McpToolAdapter
                 {
                     await adapter.PersistReferencesAsync(storage, McpRecordKind.TestRun, test.Id, 1, McpReferenceRole.Artifact, [artifactReference], scope, token);
                 }
-                return SuccessJson(new TestReceipt(test.Id.ToString("D"), "Recorded", test.CreatedUtc, 1), correlationId, McpJson.ResponseBytes);
+                if (predecessor is not null)
+                {
+                    await adapter.PersistReferencesAsync(storage, McpRecordKind.TestRun, test.Id, 1, McpReferenceRole.Supersedes,
+                        [new Reference(scope.Project.Id.ToString("D"), "record", predecessor.RepositoryId?.ToString("D"), predecessor.Id.ToString("D"))], scope, token, McpRecordKind.TestRun);
+                }
+                return SuccessJson(new TestReceipt(test.Id.ToString("D"), "Recorded", test.CreatedUtc, 1, predecessor?.Id.ToString("D")), correlationId, McpJson.ResponseBytes);
             }, cancellationToken);
         }
 

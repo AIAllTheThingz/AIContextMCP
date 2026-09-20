@@ -228,22 +228,61 @@ internal sealed partial class RepositoryBoundary
         var branch = ParseBranch(head[prefix.Length..]);
         var segments = branch.Split('/');
         var referenceDirectory = Path.Combine(gitDirectory, "refs", "heads");
-        HoldRelativeDirectories(gitDirectory, ["refs", "heads"], snapshot);
+        var looseAvailable = Directory.Exists(referenceDirectory);
+        if (looseAvailable) HoldRelativeDirectories(gitDirectory, ["refs", "heads"], snapshot);
         foreach (var segment in segments[..^1])
         {
             referenceDirectory = Path.Combine(referenceDirectory, segment);
+            if (!Directory.Exists(referenceDirectory))
+            {
+                looseAvailable = false;
+                break;
+            }
+
             HoldDirectory(snapshot, referenceDirectory);
         }
 
-        var reference = OpenVerifiedFile(Path.Combine(referenceDirectory, segments[^1]));
-        snapshot.Hold(reference);
-        var commit = ReadSingleLine(reference, "branch reference");
-        if (!IsCommitSha(commit))
+        var referencePath = Path.Combine(referenceDirectory, segments[^1]);
+        if (looseAvailable && File.Exists(referencePath))
         {
-            throw new ApplicationException(ApplicationErrorCode.PathRejected, "Git branch reference is invalid.");
+            var reference = OpenVerifiedFile(referencePath);
+            snapshot.Hold(reference);
+            var commit = ReadSingleLine(reference, "branch reference");
+            if (!IsCommitSha(commit))
+            {
+                throw new ApplicationException(ApplicationErrorCode.PathRejected, "Git branch reference is invalid.");
+            }
+
+            return (branch, commit.ToLowerInvariant());
         }
 
-        return (branch, commit.ToLowerInvariant());
+        var packedPath = Path.Combine(gitDirectory, "packed-refs");
+        if (File.Exists(packedPath))
+        {
+            var packed = OpenVerifiedFile(packedPath);
+            snapshot.Hold(packed);
+            var commit = ReadPackedBranch(packed, branch);
+            if (commit is not null) return (branch, commit);
+        }
+
+        throw new ApplicationException(ApplicationErrorCode.UnbornRepository, "Git repository has no commit yet.");
+    }
+
+    private static string? ReadPackedBranch(FileStream packed, string branch)
+    {
+        var target = $"refs/heads/{branch}";
+        foreach (var line in ReadBoundedUtf8(packed, "packed references").Split('\n'))
+        {
+            var value = line.TrimEnd('\r');
+            if (value.Length == 0 || value[0] is '#' or '^') continue;
+            var separator = value.IndexOf(' ');
+            if (separator <= 0 || !value[(separator + 1)..].Equals(target, StringComparison.Ordinal)) continue;
+            var commit = value[..separator];
+            if (!IsCommitSha(commit)) throw new ApplicationException(ApplicationErrorCode.PathRejected, "Packed Git branch reference is invalid.");
+            return commit.ToLowerInvariant();
+        }
+
+        return null;
     }
 
     private static string ParseBranch(string reference)
