@@ -539,7 +539,7 @@ public sealed class AIContextApplication : IAIContextApplication
 
     private static BootstrapItem? CompactItem(BootstrapItem? item, int maximum) => item is null ? null : item with { Title = Truncate(item.Title, maximum), Summary = Truncate(item.Summary, maximum), Reference = null };
     private static BootstrapValidation? CompactValidation(BootstrapValidation? validation) => validation is null ? null : validation with { Branch = null };
-    private static string[] GitWarnings(GitRepositoryState git) => git.WorkingTree == WorkingTreeState.Clean ? [] : ["Working-tree state is not clean; HEAD-based records are not current validation."];
+    private static string[] GitWarnings(GitRepositoryState git) => git.WorkingTree == WorkingTreeState.Clean ? [] : [git.WorkingTreeWarning ?? "Working-tree state is not clean; HEAD-based records are not current validation."];
     private static string RequiredText(string value, string field) => string.IsNullOrWhiteSpace(value) || value.Length > StorageLimits.HandoffField ? throw new ApplicationException(value?.Length > StorageLimits.HandoffField ? ApplicationErrorCode.ContentTooLarge : ApplicationErrorCode.InvalidInput, $"{field} is invalid.") : value;
     private static string MergeSection(string supplied, IEnumerable<string> derived) => RequiredText(supplied, "handoff section") + string.Concat(derived.Take(4).Select(value => $"\n- {Truncate(value, 256)}"));
     private static void ValidateHandoffBytes(HandoffDraft handoff)

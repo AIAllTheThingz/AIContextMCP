@@ -32,7 +32,8 @@ internal sealed class GitRepositoryInspector
             organization,
             repositoryName,
             workingTree.State,
-            workingTree.Fingerprint));
+            workingTree.Fingerprint,
+            workingTree.Warning));
     }
 
     internal static string? NormalizeRemote(string? remote)

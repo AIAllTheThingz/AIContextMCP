@@ -1,6 +1,6 @@
 # Source of truth (application boundary and implemented MCP integration; accepted)
 
-Git-dependent operations use the accepted bounded Windows-handle safety path and fail closed for unsupported layouts; final Release validation passed for the supported clean-tree/fingerprint evidence.
+Git-dependent operations use the accepted bounded Windows-handle safety path and fail closed for unsupported layouts; final Release validation passed for the supported clean-tree/fingerprint evidence. Working-tree inspection accepts UTF-8 text and screens tracked source with sensitive-looking filenames for secret-shaped literals before hashing. Root ignore handling is intentionally a bounded subset; packed objects, malformed or advanced ignore rules, and safety-limit exhaustion produce `Unknown` with a warning reason rather than being treated as clean.
 
 The exact authority order is:
 

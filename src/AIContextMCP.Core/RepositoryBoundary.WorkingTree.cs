@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO.Compression;
+using System.IO.Enumeration;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -26,14 +27,17 @@ internal sealed partial class RepositoryBoundary
 
     internal GitWorkingTreeSnapshot ObserveWorkingTree(GitMetadataSnapshot snapshot, Action? afterWatchStarted)
     {
+        var stage = "working-tree change monitoring";
         try
         {
             using var notification = OpenWorktreeChangeNotification(snapshot.CanonicalPath);
             afterWatchStarted?.Invoke();
+            stage = "Git index validation";
             var index = TryOpenVerifiedFile(Path.Combine(snapshot.GitDirectory, "index"))
                 ?? throw new UnsupportedWorkingTreeException();
             snapshot.Hold(index);
             var entries = ReadIndex(ReadBoundedBytes(index, MaximumIndexBytes));
+            stage = "Git configuration and attributes validation";
             if (snapshot.HasUnsupportedWorkingTreeConfiguration
                 || MetadataEntryExists(Path.Combine(snapshot.GitDirectory, "info", "attributes")))
             {
@@ -55,11 +59,13 @@ internal sealed partial class RepositoryBoundary
                 snapshot.Hold(rootAttributes);
                 if (!SupportsLfOnlyRootAttributes(rootAttributes)) throw new UnsupportedWorkingTreeException();
             }
-            if (entries.Any(entry => IsSensitivePath(entry.Path)))
+            stage = "sensitive-path screening";
+            if (entries.Any(entry => IsSensitiveWorkingTreePath(entry.Path, tracked: true)))
             {
                 throw new UnsupportedWorkingTreeException();
             }
 
+            stage = "loose HEAD object validation";
             var headTree = ReadCommitTree(snapshot);
             var indexTree = BuildIndexTree(entries);
             var indexed = new Dictionary<string, IndexEntry>(StringComparer.OrdinalIgnoreCase);
@@ -76,7 +82,10 @@ internal sealed partial class RepositoryBoundary
             var contentBytes = 0L;
             var files = 0;
             var directories = 0;
-            EnumerateWorktree(snapshot.CanonicalPath, string.Empty, snapshot, indexed, observed, changes, snapshot.Autocrlf is true && !hasRootAttributes, hasRootAttributes, ref contentBytes, ref files, ref directories);
+            stage = "root ignore-rule validation";
+            var ignores = ReadRootIgnoreRules(snapshot);
+            stage = "bounded working-tree content inspection (paths, sensitive content, size, or line endings)";
+            EnumerateWorktree(snapshot.CanonicalPath, string.Empty, snapshot, indexed, observed, changes, ignores, snapshot.Autocrlf is true && !hasRootAttributes, hasRootAttributes, ref contentBytes, ref files, ref directories);
             foreach (var entry in entries)
             {
                 if (!observed.Contains(entry.Path))
@@ -85,6 +94,7 @@ internal sealed partial class RepositoryBoundary
                 }
             }
 
+            stage = "concurrent working-tree change detection";
             if (WaitForSingleObject(notification, 0) != WaitTimeout)
             {
                 throw new UnsupportedWorkingTreeException();
@@ -99,11 +109,11 @@ internal sealed partial class RepositoryBoundary
         }
         catch (UnsupportedWorkingTreeException)
         {
-            return new GitWorkingTreeSnapshot(WorkingTreeState.Unknown, null);
+            return new GitWorkingTreeSnapshot(WorkingTreeState.Unknown, null, $"Working-tree freshness is unknown: inspection could not complete during {stage}.");
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or CryptographicException or FormatException or OverflowException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or CryptographicException or FormatException or OverflowException or DecoderFallbackException)
         {
-            return new GitWorkingTreeSnapshot(WorkingTreeState.Unknown, null);
+            return new GitWorkingTreeSnapshot(WorkingTreeState.Unknown, null, $"Working-tree freshness is unknown: inspection could not complete during {stage}.");
         }
     }
 
@@ -388,6 +398,7 @@ internal sealed partial class RepositoryBoundary
         IReadOnlyDictionary<string, IndexEntry> indexed,
         ISet<string> observed,
         ICollection<WorktreeChange> changes,
+        IReadOnlyList<string> ignores,
         bool normalizeLineEndings,
         bool requireLf,
         ref long contentBytes,
@@ -409,19 +420,27 @@ internal sealed partial class RepositoryBoundary
             }
 
             var relativePath = relativeDirectory.Length == 0 ? name : $"{relativeDirectory}/{name}";
+            var isDirectory = Directory.Exists(path);
+            var tracked = indexed.ContainsKey(relativePath);
+            if (!tracked && !indexed.Keys.Any(key => key.StartsWith(relativePath + "/", StringComparison.OrdinalIgnoreCase))
+                && IsIgnored(relativePath, isDirectory, ignores)) continue;
+            if (name.Equals(".gitignore", StringComparison.OrdinalIgnoreCase) && relativeDirectory.Length != 0)
+            {
+                throw new UnsupportedWorkingTreeException();
+            }
             if (name.Equals(".gitattributes", StringComparison.OrdinalIgnoreCase) && relativeDirectory.Length != 0)
             {
                 throw new UnsupportedWorkingTreeException();
             }
 
-            if (IsSensitivePath(relativePath))
+            if (IsSensitiveWorkingTreePath(relativePath, tracked))
             {
                 throw new UnsupportedWorkingTreeException();
             }
 
-            if (Directory.Exists(path))
+            if (isDirectory)
             {
-                EnumerateWorktree(path, relativePath, snapshot, indexed, observed, changes, normalizeLineEndings, requireLf, ref contentBytes, ref files, ref directories);
+                EnumerateWorktree(path, relativePath, snapshot, indexed, observed, changes, ignores, normalizeLineEndings, requireLf, ref contentBytes, ref files, ref directories);
                 continue;
             }
 
@@ -432,7 +451,7 @@ internal sealed partial class RepositoryBoundary
 
             var file = TryOpenVerifiedFile(path) ?? throw new UnsupportedWorkingTreeException();
             snapshot.Hold(file);
-            var hashes = HashWorkingFile(file, normalizeLineEndings, requireLf, ref contentBytes);
+            var hashes = HashWorkingFile(file, normalizeLineEndings, requireLf, IsSensitivePath(relativePath, allowSourceFiles: false), ref contentBytes);
             if (indexed.TryGetValue(relativePath, out var entry))
             {
                 observed.Add(entry.Path);
@@ -523,7 +542,7 @@ internal sealed partial class RepositoryBoundary
         return true;
     }
 
-    private static FileHashes HashWorkingFile(FileStream stream, bool normalizeLineEndings, bool requireLf, ref long aggregateBytes)
+    private static FileHashes HashWorkingFile(FileStream stream, bool normalizeLineEndings, bool requireLf, bool screenSource, ref long aggregateBytes)
     {
         var length = stream.Length;
         if (length > MaximumWorktreeFileBytes || aggregateBytes > MaximumWorktreeBytes - length)
@@ -536,6 +555,10 @@ internal sealed partial class RepositoryBoundary
         var bytes = new byte[checked((int)length)];
         stream.Position = 0;
         stream.ReadExactly(bytes);
+        if (screenSource && (bytes.Contains((byte)0) || SecretValueClassifier.IsSecretShaped(new UTF8Encoding(false, true).GetString(bytes))))
+        {
+            throw new UnsupportedWorkingTreeException();
+        }
         if (requireLf && bytes.Contains((byte)'\r')) throw new UnsupportedWorkingTreeException();
         content.AppendData(bytes);
 
@@ -568,6 +591,14 @@ internal sealed partial class RepositoryBoundary
         var count = 0;
         var lineEndings = false;
         var ambiguous = false;
+        try
+        {
+            _ = new UTF8Encoding(false, true).GetCharCount(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            ambiguous = true;
+        }
         for (var index = 0; index < bytes.Length; index++)
         {
             if (bytes[index] == '\r')
@@ -578,7 +609,7 @@ internal sealed partial class RepositoryBoundary
             }
 
             var value = bytes[index];
-            if (value != '\t' && value != '\n' && (value < ' ' || value > '~')) ambiguous = true;
+            if (value != '\t' && value != '\n' && (value < ' ' || value == 0x7F)) ambiguous = true;
             normalized[count++] = bytes[index];
         }
         return lineEndings && !ambiguous ? (normalized[..count], false) : (null, lineEndings && ambiguous);
@@ -716,20 +747,73 @@ internal sealed partial class RepositoryBoundary
                 && baseName[3] is >= '1' and <= '9');
     }
 
-    private static bool IsSensitivePath(string path)
+    // Only tracked source may pass the filename heuristic; its content is screened before hashing.
+    private static bool IsSensitiveWorkingTreePath(string path, bool tracked)
+    {
+        if (!IsSensitivePath(path, allowSourceFiles: false)) return false;
+        var separator = path.LastIndexOf('/');
+        var name = path[(separator + 1)..];
+        return !tracked
+            || separator >= 0 && IsSensitivePath(path[..separator], allowSourceFiles: false)
+            || name.StartsWith('.')
+            || !(IsSourceFile(name) || Path.GetExtension(name).Equals(".psd1", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ponytail: support bounded root rules; fail closed on advanced/nested rules until full Git ignore semantics are implemented.
+    private static IReadOnlyList<string> ReadRootIgnoreRules(GitMetadataSnapshot snapshot)
+    {
+        var file = TryOpenVerifiedFile(Path.Combine(snapshot.CanonicalPath, ".gitignore"));
+        if (file is null) return [];
+        snapshot.Hold(file);
+        var rules = new List<string>();
+        foreach (var line in new UTF8Encoding(false, true).GetString(ReadBoundedBytes(file, StorageLimits.Content)).Split('\n'))
+        {
+            var rule = line.EndsWith('\r') ? line[..^1] : line;
+            if (rule.Length == 0 || rule.StartsWith('#')) continue;
+            if (rule.Any(char.IsControl) || rule.Contains("//", StringComparison.Ordinal) || rule != rule.Trim()
+                || rule.IndexOfAny(['!', '\\', '[', ']', '?']) >= 0 || rule.Contains("**", StringComparison.Ordinal))
+                throw new UnsupportedWorkingTreeException();
+            if (rules.Count >= MaximumWorktreeEntries) throw new UnsupportedWorkingTreeException();
+            var pattern = rule.Trim('/');
+            if (pattern.Length == 0 || pattern.Split('/').Any(segment => segment is "." or "..")
+                || pattern.Contains('/') && pattern.Contains('*')) throw new UnsupportedWorkingTreeException();
+            rules.Add(rule);
+        }
+        return rules;
+    }
+
+    private static bool IsIgnored(string path, bool directory, IReadOnlyList<string> rules)
+    {
+        // Check ancestors too when an ignored directory contains a force-added tracked file.
+        var segments = path.Split('/');
+        for (var count = 1; count <= segments.Length; count++)
+        {
+            var candidate = string.Join('/', segments, 0, count);
+            foreach (var rule in rules)
+            {
+                if (rule.EndsWith('/') && count == segments.Length && !directory) continue;
+                var pattern = rule.Trim('/');
+                if (rule.StartsWith('/') && !pattern.Contains('/') && count != 1) continue;
+                var value = rule.StartsWith('/') || pattern.Contains('/') ? candidate : segments[count - 1];
+                if (FileSystemName.MatchesSimpleExpression(pattern, value, ignoreCase: false)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool IsSensitivePath(string path, bool allowSourceFiles = true)
     {
         var segments = path.Split('/');
         for (var index = 0; index < segments.Length; index++)
         {
-            if (IsSensitiveSegment(segments[index], index == segments.Length - 1)) return true;
+            if (IsSensitiveSegment(segments[index], index == segments.Length - 1, allowSourceFiles)) return true;
         }
-
         return false;
     }
 
-    private static bool IsSensitiveSegment(string segment, bool leaf) =>
+    private static bool IsSensitiveSegment(string segment, bool leaf, bool allowSourceFiles) =>
         segment.StartsWith(".env", StringComparison.OrdinalIgnoreCase)
-        || ((!leaf || !IsSourceFile(segment)) && (segment.Contains("secret", StringComparison.OrdinalIgnoreCase)
+        || ((!leaf || !allowSourceFiles || !IsSourceFile(segment)) && (segment.Contains("secret", StringComparison.OrdinalIgnoreCase)
             || segment.Contains("credential", StringComparison.OrdinalIgnoreCase)
             || segment.Contains("password", StringComparison.OrdinalIgnoreCase)
             || segment.Contains("token", StringComparison.OrdinalIgnoreCase)))
@@ -776,4 +860,4 @@ internal sealed partial class RepositoryBoundary
     }
 }
 
-internal sealed record GitWorkingTreeSnapshot(WorkingTreeState State, string? Fingerprint);
+internal sealed record GitWorkingTreeSnapshot(WorkingTreeState State, string? Fingerprint, string? Warning = null);

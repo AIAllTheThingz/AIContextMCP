@@ -7,6 +7,170 @@ namespace AIContextMCP.Core.Tests;
 
 public sealed class GitBoundaryTests
 {
+    [Theory]
+    [InlineData("Modules/Core/Credentials.psm1")]
+    [InlineData("Modules/Core/Credentials.psd1")]
+    [InlineData("src/SnapshotToken.cs")]
+    public async Task Inspector_fingerprints_tracked_source_with_sensitive_words(string relativePath)
+    {
+        using var fixture = new ControlledGitFixture();
+        var path = Path.Combine(fixture.RepositoryPath, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "# source fixture\n");
+        fixture.Run("add", ".");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source");
+        var inspector = new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"]));
+
+        var clean = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Clean, clean.WorkingTree);
+        Assert.NotNull(clean.WorkingTreeFingerprint);
+        File.AppendAllText(path, "# changed source\n");
+        var dirty = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Dirty, dirty.WorkingTree);
+        Assert.NotEqual(clean.WorkingTreeFingerprint, dirty.WorkingTreeFingerprint);
+        File.WriteAllText(path, "password = 'fixture-sensitive-value'\n");
+        var sensitive = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Unknown, sensitive.WorkingTree);
+        Assert.Null(sensitive.WorkingTreeFingerprint);
+    }
+
+    [Fact]
+    public async Task Inspector_excludes_ignored_files_but_still_observes_tracked_files()
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), "# runtime output\n/TestResults/\n*.tmp\n");
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "tracked.tmp"), "tracked\n");
+        fixture.Run("add", ".gitignore");
+        fixture.Run("add", "-f", "tracked.tmp");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "ignore rules");
+        var inspector = new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"]));
+        var clean = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        var output = Path.Combine(fixture.RepositoryPath, "TestResults");
+        Directory.CreateDirectory(output);
+        using var unreadable = new FileStream(Path.Combine(output, "credentials.json"), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "ignored.tmp"), "ignored\n");
+        var ignored = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Empty(fixture.Run("status", "--porcelain"));
+        Assert.Equal(WorkingTreeState.Clean, ignored.WorkingTree);
+        Assert.Equal(clean.WorkingTreeFingerprint, ignored.WorkingTreeFingerprint);
+        File.AppendAllText(Path.Combine(fixture.RepositoryPath, "tracked.tmp"), "changed\n");
+        var dirty = await inspector.InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Dirty, dirty.WorkingTree);
+        Assert.NotEqual(clean.WorkingTreeFingerprint, dirty.WorkingTreeFingerprint);
+    }
+
+    [Theory]
+    [InlineData("ignored.tmp\r\r\n")]
+    [InlineData("//ignored.tmp\n")]
+    [InlineData("/ignored.tmp//\n")]
+    [InlineData("!ignored.tmp\n")]
+    public async Task Inspector_returns_unknown_for_malformed_root_ignore_rules(string ignore)
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), ignore, new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Unknown, state.WorkingTree);
+        Assert.Null(state.WorkingTreeFingerprint);
+        Assert.NotNull(state.WorkingTreeWarning);
+    }
+
+    [Fact]
+    public async Task Inspector_does_not_apply_rooted_wildcard_to_nested_or_forced_tracked_files()
+    {
+        using var fixture = new ControlledGitFixture();
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, ".gitignore"), "/ignored*\n", new UTF8Encoding(false));
+        fixture.Run("add", ".gitignore");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "ignore");
+        var nested = Path.Combine(fixture.RepositoryPath, "nested");
+        Directory.CreateDirectory(nested);
+        var child = Path.Combine(nested, "ignored.txt");
+        File.WriteAllText(child, "nested\n", new UTF8Encoding(false));
+        var untracked = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Dirty, untracked.WorkingTree);
+        var ignoredDirectory = Path.Combine(fixture.RepositoryPath, "ignored-dir");
+        Directory.CreateDirectory(ignoredDirectory);
+        var forced = Path.Combine(ignoredDirectory, "tracked.txt");
+        File.WriteAllText(forced, "forced\n", new UTF8Encoding(false));
+        fixture.Run("add", "-f", "nested/ignored.txt");
+        fixture.Run("add", "-f", "ignored-dir/tracked.txt");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "forced child");
+        File.AppendAllText(forced, "changed\n");
+        var changed = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Dirty, changed.WorkingTree);
+        Assert.NotNull(changed.WorkingTreeFingerprint);
+    }
+
+    [Fact]
+    public async Task Inspector_returns_unknown_for_invalid_utf8_sensitive_source_and_untracked_sensitive_path()
+    {
+        using var fixture = new ControlledGitFixture();
+        var source = Path.Combine(fixture.RepositoryPath, "Credentials.ps1");
+        File.WriteAllBytes(source, [0xC3, 0x28]);
+        fixture.Run("add", source);
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "invalid utf8");
+        var invalid = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Unknown, invalid.WorkingTree);
+        Assert.Null(invalid.WorkingTreeFingerprint);
+        Assert.NotNull(invalid.WorkingTreeWarning);
+        File.WriteAllText(source, "safe\n", new UTF8Encoding(false));
+        fixture.Run("add", source);
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "safe source");
+        var clean = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Clean, clean.WorkingTree);
+        Assert.NotNull(clean.WorkingTreeFingerprint);
+        File.WriteAllText(Path.Combine(fixture.RepositoryPath, "CredentialsHelper.ps1"), "safe\n", new UTF8Encoding(false));
+        var untracked = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Unknown, untracked.WorkingTree);
+        Assert.Null(untracked.WorkingTreeFingerprint);
+        Assert.NotNull(untracked.WorkingTreeWarning);
+    }
+
+    [Fact]
+    public async Task Inspector_normalizes_valid_utf8_crlf_like_git()
+    {
+        using var fixture = new ControlledGitFixture();
+        fixture.Run("config", "core.autocrlf", "true");
+        var path = Path.Combine(fixture.RepositoryPath, "README.md");
+        File.WriteAllText(path, "UTF-8: café — 日本語\n", new UTF8Encoding(false));
+        fixture.Run("add", ".");
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "unicode");
+        File.WriteAllText(path, "UTF-8: café — 日本語\r\n", new UTF8Encoding(false));
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(fixture.Run("hash-object", "--path=README.md", "README.md"), fixture.Run("rev-parse", ":README.md"));
+        Assert.Empty(fixture.Run("diff", "--", "README.md"));
+        Assert.Equal(WorkingTreeState.Clean, state.WorkingTree);
+        Assert.NotNull(state.WorkingTreeFingerprint);
+    }
+
+    [Theory]
+    [InlineData("clientSecret = \"fixture-sensitive-value\";")]
+    [InlineData("_clientSecret = \"fixture-sensitive-value\";")]
+    [InlineData("secret = \\\"fixture-sensitive-value\\\";")]
+    [InlineData("credentials: 'fixture-sensitive-value'")]
+    public async Task Inspector_rejects_quoted_sensitive_source_literals(string source)
+    {
+        using var fixture = new ControlledGitFixture();
+        var path = Path.Combine(fixture.RepositoryPath, "SnapshotToken.cs");
+        File.WriteAllText(path, source, new UTF8Encoding(false));
+        fixture.Run("add", path);
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Unknown, state.WorkingTree);
+        Assert.Null(state.WorkingTreeFingerprint);
+    }
+
+    [Fact]
+    public async Task Inspector_allows_runtime_credential_getter_source()
+    {
+        using var fixture = new ControlledGitFixture();
+        var path = Path.Combine(fixture.RepositoryPath, "SnapshotToken.ps1");
+        File.WriteAllText(path, "$Credential = Get-Credential\n", new UTF8Encoding(false));
+        fixture.Run("add", path);
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "runtime getter");
+        var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
+        Assert.Equal(WorkingTreeState.Clean, state.WorkingTree);
+        Assert.NotNull(state.WorkingTreeFingerprint);
+    }
+
     [Fact]
     public async Task Inspector_reads_fixed_metadata_without_running_git()
     {
@@ -131,6 +295,9 @@ public sealed class GitBoundaryTests
         using var fixture = new ControlledGitFixture();
         var path = Path.Combine(fixture.RepositoryPath, fileName);
         File.WriteAllText(path, "internal sealed class CredentialProvider { }");
+        fixture.Run("add", path);
+        fixture.Run("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "credential source");
+        File.AppendAllText(path, "\n// changed\n");
 
         var state = await new GitRepositoryInspector(new RepositoryBoundary([@"D:\Projects"])).InspectAsync(fixture.RepositoryPath, CancellationToken.None);
 
