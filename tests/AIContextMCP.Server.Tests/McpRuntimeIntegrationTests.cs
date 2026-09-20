@@ -124,6 +124,11 @@ public sealed class McpRuntimeIntegrationTests
                 ("summary", "Current branch observation."),
                 ("source", Source()),
                 ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("entryId").GetString()!;
+            var commitPrecedence = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId),
+                ("branch", "does-not-match"), ("commit", currentSnapshot.GetProperty("head").GetString()),
+                ("maxResults", 100)), cancellationToken));
+            Assert.Equal(branchEntryId, Entry(commitPrecedence, branchEntryId).GetProperty("entryId").GetString());
             var decisionId = Success(await CallAsync(first.Client, "decision.record", Arguments(
                 ("requestId", RequestId()),
                 ("projectId", projectId),
@@ -213,6 +218,18 @@ public sealed class McpRuntimeIntegrationTests
                 ("projectId", projectId), ("findingId", findingId), ("maxBytes", McpJson.MinimumResponseBytes)), cancellationToken));
             Assert.True(minimumBudgetFindingDetail.GetProperty("truncated").GetBoolean());
             Assert.Single(minimumBudgetFindingDetail.GetProperty("findings").EnumerateArray());
+            var escapedProvenance = new string('<', McpJson.DefaultString);
+            var escapedProvenanceFindingId = Success(await CallAsync(first.Client, "finding.record", Arguments(
+                ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
+                ("title", "Escaped provenance finding"), ("severity", "Info"), ("status", "Open"),
+                ("description", "Fits the minimum response budget."), ("source", Source(escapedProvenance)),
+                ("observedSnapshot", currentSnapshot)), cancellationToken)).GetProperty("findingId").GetString()!;
+            var escapedProvenanceDetail = Success(await CallAsync(first.Client, "context.search", Arguments(
+                ("projectId", projectId), ("repositoryId", repositoryId), ("findingId", escapedProvenanceFindingId),
+                ("maxBytes", McpJson.MinimumResponseBytes)), cancellationToken));
+            var escapedProvenanceItem = Assert.Single(escapedProvenanceDetail.GetProperty("findings").EnumerateArray());
+            Assert.True(escapedProvenanceDetail.GetProperty("truncated").GetBoolean());
+            Assert.True(escapedProvenanceItem.GetProperty("provenance").GetString()!.Length < escapedProvenance.Length);
             var supersedingTest = Success(await CallAsync(first.Client, "test.record", Arguments(
                 ("requestId", RequestId()), ("projectId", projectId), ("repositoryId", repositoryId),
                 ("name", "Replacement runtime test"), ("status", "Passed"), ("passed", 1), ("failed", 0), ("skipped", 0),

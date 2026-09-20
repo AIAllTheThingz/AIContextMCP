@@ -115,13 +115,15 @@ internal sealed class McpToolAdapter
             {
                 var titleLimit = Math.Max(1, 256 * descriptionLimit / 4096);
                 var optionalLimit = 2048 * descriptionLimit / 4096;
+                var provenanceLimit = Math.Max(1, McpJson.DefaultString * descriptionLimit / 4096);
                 var truncated = finding.Title.Length > titleLimit
                     || finding.Description.Length > descriptionLimit
                     || finding.Remediation?.Length > optionalLimit
-                    || finding.ResolutionEvidence?.Length > optionalLimit;
+                    || finding.ResolutionEvidence?.Length > optionalLimit
+                    || observation?.SourceKind.Length > provenanceLimit;
                 var detail = new McpFindingItem(finding.Id.ToString("D"), finding.Revision, Bound(finding.Title, titleLimit)!, finding.Severity, finding.Status,
                     Bound(finding.Description, Math.Max(1, descriptionLimit))!, Bound(finding.Remediation, optionalLimit), Bound(finding.ResolutionEvidence, optionalLimit),
-                    finding.Branch, finding.CommitSha, freshness, observation?.SourceKind);
+                    finding.Branch, finding.CommitSha, freshness, Bound(observation?.SourceKind, provenanceLimit));
                 var warnings = truncated
                     ? freshnessWarnings.Append("Finding detail fields were truncated for the response budget.").ToArray()
                     : freshnessWarnings;
@@ -148,12 +150,13 @@ internal sealed class McpToolAdapter
 
             return Success(findingResult, correlationId, request.MaxBytes);
         }
+        var branch = request.Commit is null ? request.Branch : null;
         var filterHash = FilterHash(new
         {
             scope.Project.Id,
             RepositoryId = scope.Repository?.Id,
             request.Category,
-            request.Branch,
+            Branch = branch,
             request.Commit,
             request.Status,
             request.RecencySinceUtc,
@@ -165,7 +168,7 @@ internal sealed class McpToolAdapter
             scope.Project.Id,
             scope.Repository?.Id,
             request.Category,
-            request.Branch,
+            branch,
             request.Commit,
             request.Status,
             request.RecencySinceUtc,
